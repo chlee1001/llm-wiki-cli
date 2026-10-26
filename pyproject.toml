@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-wiki-cli"
+version = "0.1.0"
+description = "Local Markdown wiki CLI for LLM agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "rudy" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+]
+
+[project.scripts]
+llm-wiki = "llm_wiki.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_wiki"]
