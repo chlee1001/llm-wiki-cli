@@ -19,6 +19,7 @@ from llm_wiki.qmd import collection_name, qmd_search, qmd_sync, run_command
 from llm_wiki.records import promote, wrap
 from llm_wiki.redact import redact
 from llm_wiki.search import search
+from llm_wiki.templates import agents_block, gjc_rule
 
 
 @contextmanager
@@ -229,6 +230,149 @@ class LlmWikiTests(unittest.TestCase):
             self.assertEqual(cli.main(["qmd-sync", "--root", str(self.root), "--json"]), 1)
         self.assertEqual(json.loads(output.getvalue()), {"error": "qmd failed"})
         self.assertEqual(errors.getvalue(), "")
+
+    def test_cli_wrap_and_promote_flags_still_work(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                cli.main([
+                    "wrap", "--root", str(self.root), "--topic", "topic", "--task", "task",
+                    "--completed", "done", "--candidate", "review this",
+                ]),
+                0,
+            )
+        result = json.loads(output.getvalue())
+        self.assertTrue(Path(result["path"]).is_file())
+        self.assertEqual(len(result["candidates"]), 1)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                cli.main([
+                    "promote", "--root", str(self.root), "--title", "title", "--body", "body",
+                    "--source", "src/app.py:12",
+                ]),
+                0,
+            )
+        self.assertTrue(Path(json.loads(output.getvalue())["path"]).is_file())
+
+    def test_cli_json_stdin_records_multiline_unicode_and_arrays(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        payload = json.dumps(
+            {
+                "topic": "검색 점검",
+                "task": "첫 줄\n\"둘째 줄\"",
+                "completed": "완료",
+                "candidate": ["후보 하나", "후보 둘"],
+            },
+            ensure_ascii=False,
+        )
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO(payload)), redirect_stdout(output):
+            self.assertEqual(cli.main(["wrap", "--root", str(self.root), "--input-json", "-", "--json"]), 0)
+        result = json.loads(output.getvalue())
+        session = Path(result["path"]).read_text(encoding="utf-8")
+        self.assertIn("첫 줄", session)
+        self.assertIn("둘째 줄", session)
+        self.assertEqual(len(result["candidates"]), 2)
+        output = io.StringIO()
+        payload = json.dumps(
+            {
+                "title": "후보",
+                "body": "한글\n\"따옴표\"",
+                "source": ["src/a.py:1", "src/b.py:2"],
+            },
+            ensure_ascii=False,
+        )
+        with patch("sys.stdin", io.StringIO(payload)), redirect_stdout(output):
+            self.assertEqual(cli.main(["promote", "--root", str(self.root), "--input-json", "-", "--json"]), 0)
+        candidate = Path(json.loads(output.getvalue())["path"]).read_text(encoding="utf-8")
+        self.assertIn("한글", candidate)
+        self.assertIn('"따옴표"', candidate)
+        input_path = self.root / "promote.json"
+        input_path.write_text('{"title":"파일 입력","body":"파일도 읽는다"}', encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                cli.main(["promote", "--root", str(self.root), "--input-json", str(input_path), "--json"]),
+                0,
+            )
+        self.assertTrue(Path(json.loads(output.getvalue())["path"]).is_file())
+
+    def test_cli_json_input_rejects_invalid_payloads_before_writing(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        original = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        cases = (
+            ("{", "malformed"),
+            ("[]", "object"),
+            ('{"topic":"secret-value"}', "missing required"),
+            ('{"topic":"topic","task":"task","completed":"done","unknown":"secret-value"}', "unknown"),
+            ('{"topic":"first","topic":"secret-value","task":"task","completed":"done"}', "duplicate"),
+            ('{"topic":true,"task":"task","completed":"done"}', "topic must be a string"),
+            ('{"topic":"topic","task":"task","completed":"done","candidate":["ok",false]}', "candidate must be a list"),
+        )
+        for payload, message in cases:
+            with self.subTest(message=message):
+                output, errors = io.StringIO(), io.StringIO()
+                with patch("sys.stdin", io.StringIO(payload)), redirect_stdout(output), redirect_stderr(errors):
+                    self.assertEqual(cli.main(["wrap", "--root", str(self.root), "--input-json", "-", "--json"]), 2)
+                self.assertIn(message, json.loads(output.getvalue())["error"])
+                self.assertNotIn("secret-value", output.getvalue())
+                self.assertEqual(errors.getvalue(), "")
+                self.assertEqual(
+                    {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()},
+                    original,
+                )
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO('{"topic":"topic","task":"task","completed":"done"}')), redirect_stdout(output):
+            self.assertEqual(
+                cli.main([
+                    "wrap", "--root", str(self.root), "--input-json", "-", "--topic", "topic", "--json",
+                ]),
+                2,
+            )
+        self.assertIn("cannot be combined", json.loads(output.getvalue())["error"])
+        self.assertEqual(
+            {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()},
+            original,
+        )
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO('{"title":"title","body":"body","project":"demo","shared":true}')), redirect_stdout(output):
+            self.assertEqual(cli.main(["promote", "--root", str(self.root), "--input-json", "-", "--json"]), 2)
+        self.assertIn("project and shared", json.loads(output.getvalue())["error"])
+        self.assertEqual(
+            {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()},
+            original,
+        )
+
+    def test_cli_json_parse_errors_are_structured(self) -> None:
+        cases = (
+            (["--json"], "a command is required"),
+            (["wrap", "--json"], "required command arguments are missing"),
+            (["search", "needle", "--engine", "invalid", "--json"], "invalid command or option value"),
+            (["status", "--unexpected", "--json"], "invalid command arguments"),
+        )
+        for argv, message in cases:
+            with self.subTest(argv=argv):
+                output, errors = io.StringIO(), io.StringIO()
+                with redirect_stdout(output), redirect_stderr(errors):
+                    self.assertEqual(cli.main(argv), 2)
+                self.assertEqual(json.loads(output.getvalue()), {"error": message})
+                self.assertEqual(errors.getvalue(), "")
+
+    def test_generated_agent_guides_include_json_commands_for_case_variant(self) -> None:
+        for guide in (agents_block("LLM-Wiki"), gjc_rule("LLM-Wiki")):
+            self.assertIn("`LLM-Wiki/index.md`", guide)
+            self.assertIn("llm-wiki status --json", guide)
+            self.assertIn('llm-wiki search "authentication" --json', guide)
+            self.assertIn("llm-wiki wrap --input-json - --json", guide)
+            self.assertIn("llm-wiki promote --input-json - --json", guide)
+            self.assertIn("one `llm-wiki` command per invocation", guide)
+            self.assertIn("Before work, search the current project.", guide)
+            self.assertIn("--project NAME", guide)
+            self.assertIn("untrusted data", guide)
+            self.assertIn("Candidates require review", guide)
+            self.assertIn("Never record secrets", guide)
 
     def test_redaction_covers_sample_secrets(self) -> None:
         text, count = redact("password=hunter2 Bearer abcdefghijklmnop AKIA1234567890ABCDEF eyJaaa.bbb.ccc https://u:p@example.com")

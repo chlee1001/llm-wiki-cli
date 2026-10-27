@@ -51,6 +51,24 @@ llm-wiki promote --title "확인 필요" --body "근거를 더 확인한다"
 
 모든 명령에 `--json`을 붙일 수 있다. `init`을 제외한 명령에서 `--root DIR`는 위키 탐색 시작 위치를 바꾸며, `LLM_WIKI_ROOT` 환경 변수도 쓸 수 있다.
 
+### 에이전트용 JSON 입력
+
+`wrap`과 `promote`는 `--input-json -`로 JSON 객체 하나를 표준 입력에서 읽는다. `-` 대신 JSON 파일 경로도 쓸 수 있다. 본문에 줄바꿈, 따옴표, 한글이 있어도 셸 인자를 조합하지 않아도 된다. 한 번의 호출에는 명령 하나만 실행한다.
+
+```sh
+llm-wiki wrap --input-json - --json <<'JSON'
+{"topic":"검색 점검","task":"여러 줄 본문 확인","completed":"기록 완료","candidate":["후보 하나","후보 둘"]}
+JSON
+
+llm-wiki promote --input-json - --json <<'JSON'
+{"title":"확인 필요","body":"줄바꿈과 \"따옴표\"를 그대로 기록한다.","source":["src/app.py:12"]}
+JSON
+```
+
+`wrap` 객체는 문자열 `topic`, `task`, `completed`를 반드시 넣고, 문자열 `verification`, `handoff`, `not_tested`, `agent`, `project`와 문자열 배열 `candidate`를 더 넣을 수 있다. `promote` 객체는 문자열 `title`, `body`를 반드시 넣고, 문자열 배열 `source`, 문자열 `project`, 불리언 `shared`를 더 넣을 수 있다. `project`와 `shared: true`는 함께 쓸 수 없다. JSON 입력과 같은 명령의 본문 옵션(`--topic`, `--body`, `--candidate` 등)은 섞을 수 없다.
+
+성공 결과는 기존처럼 표준 출력의 JSON이다. `--json`을 명시하면 인수·JSON 입력 오류도 표준 출력의 `{"error":"..."}` JSON으로 받고 종료 코드 `2`를 쓴다. `--json` 없이 오류가 나면 표준 오류에 출력한다. JSON이 객체가 아니거나, 문법이 틀리거나, 중복·알 수 없는 키가 있거나, 필드 타입이나 필수 필드가 맞지 않으면 위키를 쓰기 전에 거부한다. 오류 메시지는 입력 본문이나 비밀값을 되풀이하지 않는다.
+
 `wrap`과 `promote`에서 현재 디렉터리로 프로젝트를 찾지 못하면 공유 영역 `shared/`에 쓴다. `promote --shared`도 공유 영역을 명시한다. 세션 폴더(`sessions/YYYY/MM`), 파일 이름의 시각, `created`, `log.md`는 모두 로컬 시간을 쓰며 `created`에는 시간대 오프셋이 붙는다.
 
 비밀값 가리기는 정규식 기반 휴리스틱이다. `password=값`, `"token": "값"`처럼 키 뒤에 오는 값은 한 줄 안에서 가리고, 따옴표 안의 백슬래시는 이스케이프로 본다. 그래서 `'abc\'`처럼 백슬래시로 끝나는 값은 줄 끝까지 가린다. 닫히지 않은 따옴표도 줄 끝까지 가리므로 `"PASSWORD='x'" -e "USER=bob"`처럼 따옴표가 겹치면 뒤쪽 내용까지 가려질 수 있다. 구분자는 `=`, `:`, `:=`, `=>`를 인식하고, `SECRET_KEY`나 `client_secret`처럼 키 이름에 앞뒤 글자가 붙어도 비밀 키로 본다. 이 때문에 `password_hint`, `secretary` 같은 키의 값도 가려진다. `<password>값</password>` 같은 태그, 줄 중간의 `Authorization: Basic`과 `Cookie:` 헤더도 가린다. `Cookie` 헤더는 `curl -H "Cookie: ..."`처럼 따옴표 인자 안에 있으면 닫는 따옴표까지 가린다. 다만 닫는 따옴표 바로 뒤가 공백, 구분 기호(`,;:)]}`), 줄 끝 중 하나가 아니면(`"Cookie: a=b"tail`처럼 글자가 붙으면) 줄 끝까지 가린다. `"Cookie": "..."` 같은 JSON 키를 포함한 나머지 경우에도 줄 끝까지 가린다. `mysid=`, `xsessionid=`, `x-session-id=`처럼 이름에 `session`이 들어가거나 `sid`로 끝나는 키의 값은 토큰으로 가린다. 그래서 `ssid=`, `possession=` 값도 가려진다. 값에 섞인 짝 없는 따옴표는 줄 끝까지 가린다. 다만 따옴표 뒤에 남은 줄이 256자보다 짧고 따옴표 바로 뒤에 공백이나 구분 기호가 오면, `password=x",y next`의 `x",y`처럼 그다음 공백까지만 가린다. 이때도 `password=x",y'z next`처럼 그 공백 전에 따옴표가 하나 더 나오면 줄 끝까지 가린다. 그 밖에 `redis://:pw@host`처럼 사용자 이름이 빈 URL 인증 정보도 가린다. YAML 블록(`password: |` 다음 줄)처럼 여러 줄에 걸친 값은 가리지 못하므로 기록 전에 직접 지운다.
