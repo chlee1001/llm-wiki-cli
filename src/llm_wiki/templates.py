@@ -13,6 +13,10 @@ llm-wiki status --json
 llm-wiki search "authentication" --json
 ```
 
+{REFRESH_HINT}
+
+{RECORD_READING}
+
 Before ending a session, or when the user says "세션 마무리", "세션 종료", or "wrap up the session", record it without shell-quoting multiline text:
 
 ```sh
@@ -21,7 +25,9 @@ llm-wiki wrap --input-json - --json <<'JSON'
 JSON
 ```
 
-Candidates require review. Do not auto-promote knowledge:
+{RECORD_WRITING}
+
+Candidates require review. Do not auto-promote knowledge. {CANDIDATE_EVIDENCE}
 
 ```sh
 llm-wiki promote --input-json - --json <<'JSON'
@@ -31,6 +37,32 @@ JSON
 
 Never record secrets.
 <!-- llm-wiki:end -->"""
+
+
+REFRESH_HINT = (
+    "`llm-wiki status --json` also compares this workspace's llm-wiki files with what the installed CLI generates. "
+    "If its `refresh` field is not null, tell the user they differ and give them that command; "
+    "if the installed CLI may be older than the one that wrote them, they should update the CLI first. "
+    "Report any `managed` file marked `invalid` or `unreadable` for a manual fix."
+)
+
+RECORD_READING = (
+    "Search results show each note's `type`, `status`, and `created` time. "
+    "A record is a past observation as of that time, and the newest record is not automatically right: "
+    "check it against the current code and fresh command output before relying on it."
+)
+
+RECORD_WRITING = (
+    "Wrap runs only when an agent runs it; there is no automatic hook and no duplicate check, so record each session once. "
+    "In `verification`, give each command actually run, its result, and where the evidence is. "
+    "Keep observed facts apart from guesses in every field, including `handoff`; put unverified claims in `candidate` or `not_tested`. "
+    "Saving the record does not clean up temp files, containers, or servers: report them as removed only after checking."
+)
+
+CANDIDATE_EVIDENCE = (
+    "A wrap candidate links to its session; that shows where the claim came from, not that it was verified. "
+    "Its sources stay `None recorded.`; to record a claim with evidence, write a new candidate with `promote` and `source`:"
+)
 
 
 GJC_FRONT_MATTER = """---
@@ -49,6 +81,10 @@ llm-wiki status --json
 llm-wiki search "authentication" --json
 ```
 
+{REFRESH_HINT}
+
+{RECORD_READING}
+
 At session end, or when the user says "세션 마무리", "세션 종료", or "wrap up the session", follow the `llm-wiki-wrap` skill. Use JSON stdin for multiline fields:
 
 ```sh
@@ -57,7 +93,9 @@ llm-wiki wrap --input-json - --json <<'JSON'
 JSON
 ```
 
-Candidates require review and must not be auto-promoted to knowledge:
+{RECORD_WRITING}
+
+Candidates require review and must not be auto-promoted to knowledge. {CANDIDATE_EVIDENCE}
 
 ```sh
 llm-wiki promote --input-json - --json <<'JSON'
@@ -83,26 +121,32 @@ def gjc_skill(wiki_dir: str) -> str:
     return f"""<!-- llm-wiki:begin -->
 # llm-wiki-wrap
 
-Record the session outcome in `{wiki_dir}/` with `llm-wiki wrap`. Run this when the user says "세션 마무리", "세션 종료", "세션 정리", or asks to wrap up or end the session. Finish any requested cleanup too; the wiki record does not replace it.
+Record the session outcome in `{wiki_dir}/` with `llm-wiki wrap`. Run this when the user says "세션 마무리", "세션 종료", "세션 정리", or asks to wrap up or end the session. This skill is an instruction, not an automatic hook: nothing runs unless you run it, and `llm-wiki wrap` does not detect duplicates, so run it once per session.
+
+Writing the record is not cleanup. Finish any requested cleanup separately (temp files, containers, servers, worktrees) and report each item as removed only after checking that it is gone.
 
 ## Steps
 
 1. Collect evidence from this session: the task, changed paths (`git status --short`, `git diff --stat`), commands and tests that actually ran, decisions, unfinished work, and blockers. Do not invent results.
-2. Pick the project. Run from the project directory, or check `llm-wiki status --json` and pass `"project"` in the input.
-3. Write the record with one command. Use JSON stdin so multiline text needs no shell quoting:
+2. Sort what you collected into what you observed in this session, what you infer, and what you did not check.
+3. Pick the project. Run from the project directory, or check `llm-wiki status --json` and pass `"project"` in the input.
+4. Write the record with one command. Use JSON stdin so multiline text needs no shell quoting:
 
 ```sh
 llm-wiki wrap --input-json - --json <<'JSON'
-{{"topic":"short-topic","agent":"gjc","task":"task or ticket","completed":"what was done","verification":"commands and results","not_tested":"what was not verified","handoff":"next steps for the next session","candidate":["uncertain fact to review later"]}}
+{{"topic":"short-topic","agent":"gjc","task":"task or ticket","completed":"what was done, as observed","verification":"command actually run -> result (evidence: path or output location)","not_tested":"what was not verified","handoff":"Observed: current state you checked. Unverified: assumptions for the next session to confirm.","candidate":["uncertain fact to review later"]}}
 JSON
 ```
 
-4. Read the JSON response. Report the returned `path` (the session record) and any `candidates` paths exactly; do not guess file names.
+5. Read the JSON response. Report the returned `path` (the session record) and any `candidates` paths exactly; do not guess file names.
 
 ## Rules
 
 - Never record secrets, tokens, passwords, or personal data. Summarize instead of pasting raw logs.
-- Put uncertain facts in `candidate`. Do not promote them to knowledge without review.
+- In `verification`, name each command that actually ran, its result, and where the evidence is (a file, test name, or output location). Do not write "verified" without the command.
+- Keep observed facts apart from inferences and unverified items in every field, including `handoff`. Do not restate a candidate as fact in `handoff` or `completed`.
+- Record state with the time it was observed (for example, uncommitted at wrap time). Later sessions may find it changed.
+- Put uncertain facts in `candidate`. Each candidate links back to this session record, which shows origin, not proof; its sources stay `None recorded.`; to record evidence, write a new candidate with `llm-wiki promote` and `source`. Do not promote them to knowledge without review.
 - Omit fields that have no content rather than writing placeholders.
 - If `llm-wiki` is missing or the command fails, report the error and stop. Do not write wiki files by hand.
 <!-- llm-wiki:end -->
@@ -110,6 +154,20 @@ JSON
 
 
 def wiki_readme(name: str) -> str:
+    return f"""<!-- llm-wiki:begin -->
+# {name} LLM Wiki
+
+Read `index.md` before using this wiki. Search the current project before work and write a session record with `llm-wiki wrap` when work ends. Use candidates for uncertain claims.
+
+Session records are past observations: check their `created` time and `status`, and confirm against the current code before relying on them.
+
+Source code, tests, and AGENTS.md outrank this wiki. Do not record secrets.
+<!-- llm-wiki:end -->
+"""
+
+
+def legacy_wiki_readme(name: str) -> str:
+    """README written before README.md had llm-wiki markers; init replaces a README whose bytes still match it."""
     return f"""# {name} LLM Wiki
 
 Read `index.md` before using this wiki. Search the current project before work and write a session record with `llm-wiki wrap` when work ends. Use candidates for uncertain claims.

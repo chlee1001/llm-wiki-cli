@@ -1,6 +1,7 @@
 """Markdown search with an optional QMD backend."""
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,36 @@ def text_search(query: str, directories: list[Path], root: Path, limit: int) -> 
     return sorted(results, key=lambda item: (-item["score"], item["path"]))[:limit]
 
 
+RECORD_FIELDS = ("type", "status", "created")
+
+
+def record_metadata(path: Path) -> dict[str, str | None]:
+    """Read type/status/created from a note's front matter; missing or unreadable values stay None."""
+    metadata: dict[str, str | None] = dict.fromkeys(RECORD_FIELDS)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return metadata
+    if not lines or lines[0].strip() != "---":
+        return metadata
+    found = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            metadata.update(found)
+            break
+        key, separator, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if not separator or key not in metadata or not value:
+            continue
+        if value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        found[key] = value
+    return metadata
+
+
 def search(
     wiki: Wiki,
     query: str,
@@ -55,6 +86,24 @@ def search(
     limit: int = 10,
     runner: Runner | None = None,
     qmd_available: bool | None = None,
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    """Search notes; each result also carries the note's recorded type, status and created time."""
+    results, used, note = _search(wiki, query, cwd, project, all_projects, engine, limit, runner, qmd_available)
+    for result in results:
+        result.update(record_metadata(wiki.root / result["path"]))
+    return results, used, note
+
+
+def _search(
+    wiki: Wiki,
+    query: str,
+    cwd: Path,
+    project: str | None,
+    all_projects: bool,
+    engine: str,
+    limit: int,
+    runner: Runner | None,
+    qmd_available: bool | None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     directories, names = search_scope(wiki, cwd, project, all_projects)
     if engine not in {"auto", "qmd", "text"}:

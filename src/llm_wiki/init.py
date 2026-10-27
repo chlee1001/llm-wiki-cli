@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import os
+import shlex
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, validate_project_name, wiki_dirs, write_config
-from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, wiki_readme
+from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, legacy_wiki_readme, wiki_readme
+
+BEGIN = "<!-- llm-wiki:begin -->"
+END = "<!-- llm-wiki:end -->"
 
 
 def _write_missing(path: Path, content: str, created: list[str], existing: list[str]) -> None:
@@ -18,41 +23,98 @@ def _write_missing(path: Path, content: str, created: list[str], existing: list[
     created.append(str(path))
 
 
-def _replace_marked(
-    path: Path,
-    block: str,
-    created: list[str],
-    existing: list[str],
-    append_if_missing: bool = False,
-    prefix: str = "",
-    begin: str = "<!-- llm-wiki:begin -->",
-    end: str = "<!-- llm-wiki:end -->",
-) -> bool | None:
-    block = block.rstrip("\n")
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(prefix + block + "\n", encoding="utf-8")
-        created.append(str(path))
-        return True
-    content = path.read_text(encoding="utf-8")
+def _marked_span(content: str, path: Path, begin: str = BEGIN, end: str = END) -> tuple[int, int] | None:
+    count = content.count(begin)
     start = content.find(begin)
-    finish_start = content.find(end, start + len(begin)) if start >= 0 else -1
-    if (start < 0) != (content.find(end) < 0) or (start >= 0 and (finish_start < 0 or content.find(begin, start + len(begin)) >= 0 or content.find(end, finish_start + len(end)) >= 0)):
+    if count != content.count(end) or count > 1 or (count == 1 and content.find(end) < start + len(begin)):
         raise WikiError(f"Unpaired llm-wiki markers in {path}.")
-    if start >= 0:
-        updated = content[:start] + block + content[finish_start + len(end):]
-        if updated != content:
-            path.write_text(updated, encoding="utf-8")
-        existing.append(str(path))
-        return updated != content
-    elif append_if_missing:
-        separator = "" if content.endswith("\n") else "\n"
-        path.write_text(content + separator + "\n" + block + "\n", encoding="utf-8")
-        existing.append(str(path))
-        return True
-    else:
-        existing.append(str(path))
+    return None if count == 0 else (start, content.find(end) + len(end))
+
+
+def _splice(content: str, span: tuple[int, int] | None, block: str) -> str:
+    if span is None:
+        return content + ("" if content.endswith("\n") else "\n") + "\n" + block + "\n"
+    return content[: span[0]] + block + content[span[1]:]
+
+
+class Managed(NamedTuple):
+    group: str
+    path: Path
+    block: str
+    prefix: str = ""
+    append: bool = False
+    legacy: str | None = None
+
+    @property
+    def create(self) -> str:
+        return self.prefix + self.block + "\n"
+
+
+def managed_files(wiki: Wiki) -> list[Managed]:
+    """Files whose llm-wiki marker block init keeps in sync with this CLI's templates."""
+    d = wiki.directory.name
+    return [
+        Managed("agents", wiki.root / "AGENTS.md", agents_block(d).rstrip("\n"), append=True),
+        Managed("gjc", wiki.root / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(d).rstrip("\n"), GJC_FRONT_MATTER),
+        Managed("gjc", wiki.root / ".gjc" / "skills" / SKILL_NAME / "SKILL.md", gjc_skill(d).rstrip("\n"), SKILL_FRONT_MATTER),
+        Managed("wiki", wiki.directory / "README.md", wiki_readme(wiki.name).rstrip("\n"), legacy=legacy_wiki_readme(wiki.name)),
+    ]
+
+
+def _inspect(spec: Managed) -> tuple[str, str | None, tuple[int, int] | None]:
+    try:
+        raw = spec.path.read_bytes()
+    except FileNotFoundError:
+        return "missing", None, None
+    except OSError:
+        return "unreadable", None, None
+    if spec.legacy is not None and raw == spec.legacy.encode("utf-8"):
+        return "legacy", None, None
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return "unreadable", None, None
+    try:
+        span = _marked_span(content, spec.path)
+    except WikiError:
+        return "invalid", content, None
+    if span is None:
+        return "unmarked", content, None
+    return ("current" if content[span[0] : span[1]] == spec.block else "stale"), content, span
+
+
+def managed_status(wiki: Wiki) -> list[dict[str, str]]:
+    if wiki.legacy:
+        return []
+    entries = []
+    for spec in managed_files(wiki):
+        state, content, span = _inspect(spec)
+        entry = {"path": spec.path.relative_to(wiki.root).as_posix(), "state": state}
+        if spec.prefix and content is not None and span is not None:
+            entry["front_matter"] = "current" if content[: span[0]] == spec.prefix else "differs"
+        entries.append(entry)
+    return entries
+
+
+def refresh_command(wiki: Wiki, entries: list[dict[str, str]]) -> str | None:
+    states = [entry["state"] for entry in entries]
+    if not any(state in {"stale", "legacy"} for state in states) or any(state in {"invalid", "unreadable"} for state in states):
         return None
+    absent = {"missing", "unmarked"}
+    groups = [spec.group for spec in managed_files(wiki)]
+    flags = []
+    if all(state in absent for group, state in zip(groups, states) if group == "agents"):
+        flags.append("--no-agents")
+    if all(state in absent for group, state in zip(groups, states) if group == "gjc"):
+        flags.append("--no-gjc")
+    return shlex.join(["llm-wiki", "init", "--path", str(wiki.root), *flags])
+
+
+_FIXES = {
+    "agents": "fix it by hand, or skip it with --no-agents",
+    "gjc": "fix it by hand, or skip it with --no-gjc",
+    "wiki": "fix or delete it, then re-run init",
+}
 
 
 def project_paths(wiki: Wiki, name: str) -> list[Path]:
@@ -109,6 +171,12 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
             validate_project_name(wiki_name)
             projects = {wiki_name: "."}
         wiki = Wiki(root, directory, mode or "single", wiki_name, projects)
+    groups = {"wiki"} | ({"agents"} if include_agents else set()) | ({"gjc"} if include_gjc else set())
+    inspected = [(spec, *_inspect(spec)) for spec in managed_files(wiki) if spec.group in groups]
+    blocked = [f"{spec.path.relative_to(wiki.root).as_posix()} ({state}); {_FIXES[spec.group]}" for spec, state, _, _ in inspected if state in {"invalid", "unreadable"}]
+    if blocked:
+        raise WikiError("Cannot update " + "; ".join(blocked) + ".")
+    if not configured:
         write_config(wiki)
         created.append(str(directory / "wiki.toml"))
     for path in (directory / "shared" / "knowledge", directory / "shared" / "inbox" / "candidates"):
@@ -117,15 +185,23 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
             created.append(str(path))
     for project in wiki.projects:
         ensure_project_layout(wiki, project, created)
-    _write_missing(directory / "README.md", wiki_readme(wiki.name), created, existing)
+    updated: list[str] = []
+    for spec, state, content, span in inspected:
+        if state == "missing":
+            spec.path.parent.mkdir(parents=True, exist_ok=True)
+            spec.path.write_bytes(spec.create.encode("utf-8"))
+            created.append(str(spec.path))
+            continue
+        existing.append(str(spec.path))
+        if state == "legacy":
+            spec.path.write_bytes(spec.create.encode("utf-8"))
+            updated.append(str(spec.path))
+        elif state == "stale" or (state == "unmarked" and spec.append):
+            spec.path.write_bytes(_splice(content, span, spec.block).encode("utf-8"))
+            updated.append(str(spec.path))
     _write_missing(directory / "index.md", index(wiki.projects), created, existing)
     _write_missing(directory / "log.md", "# LLM Wiki Log\n", created, existing)
-    if include_agents:
-        _replace_marked(root / "AGENTS.md", agents_block(directory.name), created, existing, append_if_missing=True)
-    if include_gjc:
-        _replace_marked(root / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(directory.name), created, existing, prefix=GJC_FRONT_MATTER)
-        _replace_marked(root / ".gjc" / "skills" / SKILL_NAME / "SKILL.md", gjc_skill(directory.name), created, existing, prefix=SKILL_FRONT_MATTER)
-    result: dict[str, object] = {"root": str(root), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing}
+    result: dict[str, object] = {"root": str(root), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing, "updated": updated}
     if wiki.mode == "umbrella":
         result["skipped"] = skipped
     if mode is not None and mode != wiki.mode:
@@ -134,18 +210,18 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
 
 
 def register_project(wiki: Wiki, name: str, path: str | None) -> tuple[Wiki, str | None]:
-    project_path = path or name
-    updated = add_project(wiki, name, project_path)
+    begin, end = "<!-- llm-wiki:projects:begin -->", "<!-- llm-wiki:projects:end -->"
+    index_path = wiki.directory / "index.md"
+    content = index_path.read_bytes().decode("utf-8") if index_path.exists() else None
+    span = None if content is None else _marked_span(content, index_path, begin, end)
+    updated = add_project(wiki, name, path or name)
     ensure_project_layout(updated, name)
     projects = index(updated.projects)
-    project_block_start = projects.index("<!-- llm-wiki:projects:begin -->")
-    project_block_end = projects.index("<!-- llm-wiki:projects:end -->") + len("<!-- llm-wiki:projects:end -->")
-    changed = _replace_marked(
-        updated.directory / "index.md",
-        projects[project_block_start:project_block_end],
-        [],
-        [],
-        begin="<!-- llm-wiki:projects:begin -->",
-        end="<!-- llm-wiki:projects:end -->",
-    )
-    return updated, "index.md has no llm-wiki project markers; left unchanged." if changed is None else None
+    block = projects[projects.index(begin) : projects.index(end) + len(end)]
+    if content is None:
+        index_path.write_bytes((block + "\n").encode("utf-8"))
+    elif span is None:
+        return updated, "index.md has no llm-wiki project markers; left unchanged."
+    elif (spliced := _splice(content, span, block)) != content:
+        index_path.write_bytes(spliced.encode("utf-8"))
+    return updated, None

@@ -43,7 +43,17 @@ def append_log(wiki: Wiki, when: datetime, action: str, project: str, topic: str
         handle.write(f"\n## [{stamp}] {action} | {project} | {topic}\n\n- `{relative}`\n")
 
 
-def promote(wiki: Wiki, title: str, body: str, sources: list[str], project: str | None, shared: bool = False, now: datetime | None = None) -> Path:
+def promote(
+    wiki: Wiki,
+    title: str,
+    body: str,
+    sources: list[str],
+    project: str | None,
+    shared: bool = False,
+    now: datetime | None = None,
+    session: Path | None = None,
+) -> Path:
+    """Write a candidate; ``session`` links a wrap candidate to its origin record (provenance, not evidence)."""
     require_writable(wiki)
     when = now or _now()
     target, project_name = _target(wiki, project, shared)
@@ -60,12 +70,15 @@ def promote(wiki: Wiki, title: str, body: str, sources: list[str], project: str 
         path = candidate_dir / f"candidate-{when.strftime('%Y%m%d-%H%M%S')}-{slug(title)}-{suffix}.md"
         suffix += 1
     source_lines = "\n".join(f"- {source}" for source in cleaned_sources) or "- None recorded."
+    session_line = ""
+    if session is not None:
+        session_line = f"session: {json.dumps(session.relative_to(wiki.directory).as_posix(), ensure_ascii=False)}\n"
     content = f"""---
 type: candidate
 status: {status}
 project: {json.dumps(project_name, ensure_ascii=False)}
 created: {when.isoformat(timespec='seconds')}
-sources:
+{session_line}sources:
 {source_lines}
 ---
 
@@ -135,6 +148,6 @@ created: {when.isoformat(timespec='seconds')}
 {_clean(not_tested or 'None.')}
 """
     path.write_text(content, encoding="utf-8")
-    candidate_paths = [promote(wiki, candidate, candidate, [], selected, now=when) for candidate in candidates]
+    candidate_paths = [promote(wiki, candidate, candidate, [], selected, now=when, session=path) for candidate in candidates]
     append_log(wiki, when, "wrap", project_name, clean_topic, path)
     return path, candidate_paths

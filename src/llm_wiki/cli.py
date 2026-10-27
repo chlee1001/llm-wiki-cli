@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WikiError, current_project, discover, require_writable
-from .init import init_wiki, register_project
+from .init import init_wiki, managed_status, refresh_command, register_project
 from .qmd import qmd_sync
 from .records import promote, wrap
 from .search import search
@@ -193,7 +193,8 @@ def _status(wiki, cwd: Path) -> dict[str, Any]:
     for name in sorted(wiki.projects):
         base = wiki.directory / "projects" / name
         projects.append({"name": name, "path": wiki.projects[name], "knowledge": _count(base / "knowledge"), "sessions": _count(base / "sessions"), "candidates": _count(base / "inbox" / "candidates")})
-    return {"root": str(wiki.root), "mode": wiki.mode, "current_project": current_project(wiki, cwd), "projects": projects, "qmd_available": shutil.which("qmd") is not None}
+    managed = managed_status(wiki)
+    return {"root": str(wiki.root), "mode": wiki.mode, "current_project": current_project(wiki, cwd), "projects": projects, "qmd_available": shutil.which("qmd") is not None, "managed": managed, "refresh": refresh_command(wiki, managed)}
 
 
 def execute(args: argparse.Namespace) -> tuple[int, Any]:

@@ -41,13 +41,13 @@ llm-wiki promote --title "확인 필요" --body "근거를 더 확인한다"
 
 | 명령 | 설명 |
 | --- | --- |
-| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. |
+| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. 결과의 `created`는 새로 만든 파일, `updated`는 이미 있던 관리 파일 중 마커 블록 갱신으로 바이트가 바뀐 파일이다. |
 | `add-project NAME` | 프로젝트와 프로젝트 전용 디렉터리를 등록한다. `--path PATH`로 프로젝트 경로를 정한다. |
-| `status` | 현재 위키, 프로젝트, Markdown 수, QMD 설치 여부를 보여 준다. |
-| `search QUERY` | 현재 프로젝트와 공유 문서를 검색한다. `--project NAME` 또는 `-n N`으로 범위와 개수를 정하고, `--all-projects`는 전체를 검색한다. `--engine auto\|qmd\|text`로 검색 엔진을 고른다. |
+| `status` | 현재 위키, 프로젝트, Markdown 수, QMD 설치 여부와 관리 파일 상태(`managed`), 갱신 명령(`refresh`)을 보여 준다. |
+| `search QUERY` | 현재 프로젝트와 공유 문서를 검색한다. `--project NAME` 또는 `-n N`으로 범위와 개수를 정하고, `--all-projects`는 전체를 검색한다. `--engine auto\|qmd\|text`로 검색 엔진을 고른다. 결과마다 문서 머리말의 `type`, `status`, `created`를 함께 보여 주고, 값이 없으면 `null`이다. |
 | `qmd-sync` | QMD collection과 context를 만들고 갱신한다. `--embed`를 붙이면 임베딩까지 만든다. |
 | `wrap` | 작업 종료 기록을 세션 문서와 로그에 남긴다. 토큰, 비밀번호, 쿠키 값은 `[REDACTED_...]`로 가린다. `--topic`, `--task`, `--completed`는 필수이고 `--verification`, `--handoff`, `--not-tested`, `--agent`, `--project`, `--candidate`를 쓸 수 있다. |
-| `promote` | 검토 전 후보를 `inbox/candidates/`에 남긴다. `wrap`과 같은 규칙으로 비밀값을 가린다. `--title`, `--body`는 필수이고 `--source`, `--project`, `--shared`를 쓸 수 있다. |
+| `promote` | 검토 전 후보를 `inbox/candidates/`에 남긴다. `wrap`과 같은 규칙으로 비밀값을 가린다. `--title`, `--body`는 필수이고 `--source`, `--project`, `--shared`를 쓸 수 있다. `--source`가 있으면 상태가 `candidate-with-evidence`, 없으면 `needs-review`이고 출처 칸에 `None recorded.`를 쓴다. |
 
 모든 명령에 `--json`을 붙일 수 있다. `init`을 제외한 명령에서 `--root DIR`는 위키 탐색 시작 위치를 바꾸며, `LLM_WIKI_ROOT` 환경 변수도 쓸 수 있다.
 
@@ -69,6 +69,8 @@ JSON
 
 성공 결과는 기존처럼 표준 출력의 JSON이다. `--json`을 명시하면 인수·JSON 입력 오류도 표준 출력의 `{"error":"..."}` JSON으로 받고 종료 코드 `2`를 쓴다. `--json` 없이 오류가 나면 표준 오류에 출력한다. JSON이 객체가 아니거나, 문법이 틀리거나, 중복·알 수 없는 키가 있거나, 필드 타입이나 필수 필드가 맞지 않으면 위키를 쓰기 전에 거부한다. 오류 메시지는 입력 본문이나 비밀값을 되풀이하지 않는다.
 
+`wrap`의 `candidate`로 만든 후보에는 머리말 `session:`에 원본 세션 기록의 위키 내 경로가 붙는다. 이 링크는 후보가 어느 세션에서 나왔는지만 알려 줄 뿐 내용을 검증했다는 뜻이 아니다. 출처는 `None recorded.`, 상태는 `needs-review`로 남는다. 근거를 붙이려면 확인한 위치를 `promote`의 `source`로 넘겨 새 후보를 만든다.
+
 `wrap`과 `promote`에서 현재 디렉터리로 프로젝트를 찾지 못하면 공유 영역 `shared/`에 쓴다. `promote --shared`도 공유 영역을 명시한다. 세션 폴더(`sessions/YYYY/MM`), 파일 이름의 시각, `created`, `log.md`는 모두 로컬 시간을 쓰며 `created`에는 시간대 오프셋이 붙는다.
 
 비밀값 가리기는 정규식 기반 휴리스틱이다. `password=값`, `"token": "값"`처럼 키 뒤에 오는 값은 한 줄 안에서 가리고, 따옴표 안의 백슬래시는 이스케이프로 본다. 그래서 `'abc\'`처럼 백슬래시로 끝나는 값은 줄 끝까지 가린다. 닫히지 않은 따옴표도 줄 끝까지 가리므로 `"PASSWORD='x'" -e "USER=bob"`처럼 따옴표가 겹치면 뒤쪽 내용까지 가려질 수 있다. 구분자는 `=`, `:`, `:=`, `=>`를 인식하고, `SECRET_KEY`나 `client_secret`처럼 키 이름에 앞뒤 글자가 붙어도 비밀 키로 본다. 이 때문에 `password_hint`, `secretary` 같은 키의 값도 가려진다. `<password>값</password>` 같은 태그, 줄 중간의 `Authorization: Basic`과 `Cookie:` 헤더도 가린다. `Cookie` 헤더는 `curl -H "Cookie: ..."`처럼 따옴표 인자 안에 있으면 닫는 따옴표까지 가린다. 다만 닫는 따옴표 바로 뒤가 공백, 구분 기호(`,;:)]}`), 줄 끝 중 하나가 아니면(`"Cookie: a=b"tail`처럼 글자가 붙으면) 줄 끝까지 가린다. `"Cookie": "..."` 같은 JSON 키를 포함한 나머지 경우에도 줄 끝까지 가린다. `mysid=`, `xsessionid=`, `x-session-id=`처럼 이름에 `session`이 들어가거나 `sid`로 끝나는 키의 값은 토큰으로 가린다. 그래서 `ssid=`, `possession=` 값도 가려진다. 값에 섞인 짝 없는 따옴표는 줄 끝까지 가린다. 다만 따옴표 뒤에 남은 줄이 256자보다 짧고 따옴표 바로 뒤에 공백이나 구분 기호가 오면, `password=x",y next`의 `x",y`처럼 그다음 공백까지만 가린다. 이때도 `password=x",y'z next`처럼 그 공백 전에 따옴표가 하나 더 나오면 줄 끝까지 가린다. 그 밖에 `redis://:pw@host`처럼 사용자 이름이 빈 URL 인증 정보도 가린다. YAML 블록(`password: |` 다음 줄)처럼 여러 줄에 걸친 값은 가리지 못하므로 기록 전에 직접 지운다.
@@ -88,9 +90,38 @@ llm-wiki qmd-sync --embed
 
 ## 에이전트 연결
 
-`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만들며, 작업 시작 전 검색하고 종료 때 `wrap`을 실행하라는 규칙을 담는다. `.gjc/skills/llm-wiki-wrap/SKILL.md`도 만든다. 사용자가 "세션 마무리"나 "세션 종료"라고 하면 에이전트가 이 스킬을 따라 `llm-wiki wrap`으로 세션 기록을 남긴다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다. `--no-gjc`는 규칙과 스킬을 모두 건너뛴다.
+`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만들며, 작업 시작 전 검색하고 종료 때 `wrap`을 실행하라는 규칙을 담는다. `.gjc/skills/llm-wiki-wrap/SKILL.md`도 만든다. 사용자가 "세션 마무리"나 "세션 종료"라고 하면 에이전트가 이 스킬을 따라 `llm-wiki wrap`으로 세션 기록을 남긴다. 이 동작은 에이전트에게 주는 지침일 뿐 자동 훅이 아니다. 에이전트가 따르지 않으면 기록이 남지 않고, `wrap`은 중복을 검사하지 않아 같은 세션을 두 번 실행하면 기록도 두 개가 된다. 기록을 저장해도 임시 파일, 컨테이너, 서버는 정리되지 않는다. 스킬은 정리를 따로 수행하고 실제로 없어졌는지 확인한 뒤에만 정리했다고 보고하라고 안내한다. 생성된 지침은 관찰한 사실과 추정·미검증 항목을 `handoff`까지 나눠 쓰고, `verification`에 실제 명령, 결과, 근거 위치를 적도록 요구한다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다. `--no-gjc`는 규칙과 스킬을 모두 건너뛴다.
 
-에이전트는 `index.md`를 먼저 읽고 현재 프로젝트 범위에서 검색한다. 확신이 낮은 내용은 `promote`로 후보에 둔다. `promote`는 `knowledge/`에 쓰지 않으며 `reviewed`나 `stable` 상태로 바꾸지 않는다.
+에이전트는 `index.md`를 먼저 읽고 현재 프로젝트 범위에서 검색한다. 확신이 낮은 내용은 `promote`로 후보에 둔다. `promote`는 `knowledge/`에 쓰지 않으며 `reviewed`나 `stable` 상태로 바꾸지 않는다. 세션 기록은 `created` 시점의 관찰이다. 최신 기록이라고 자동으로 맞는 것도 아니므로 현재 코드와 실행 결과로 다시 확인한다. 이전 세션 기록은 고쳐 쓰지 않는다.
+
+## 관리 파일 갱신
+
+`init`이 만드는 파일 네 개(`AGENTS.md`, `.gjc/rules/llm-wiki.md`, `.gjc/skills/llm-wiki-wrap/SKILL.md`, 위키 디렉터리의 `README.md`)는 CLI를 업데이트해도 저절로 바뀌지 않는다. `llm-wiki status --json`의 `managed` 목록은 파일마다 `<!-- llm-wiki:begin -->`부터 `<!-- llm-wiki:end -->`까지의 블록을 지금 설치된 CLI가 만드는 내용과 비교한 상태를 보여 준다. 패키지 버전은 비교하지 않는다. `status`는 아무 파일도 쓰지 않는다.
+
+| 상태 | 뜻 | `init` 재실행 시 |
+| --- | --- | --- |
+| `current` | 블록이 현재 CLI 출력과 같다 | 그대로 둔다 |
+| `stale` | 블록이 현재 CLI 출력과 다르다 | 블록만 교체한다 |
+| `missing` | 파일이 없다 | 새로 만든다 |
+| `unmarked` | 마커가 없다 | `AGENTS.md`만 끝에 블록을 덧붙이고 나머지는 그대로 둔다 |
+| `legacy` | 마커 도입 전 CLI가 만든 위키 `README.md`와 바이트가 같다 | 마커가 있는 새 README로 교체한다 |
+| `invalid` | 마커 짝이 맞지 않거나 두 쌍 이상이다 | 아무것도 쓰지 않고 실패한다 |
+| `unreadable` | 읽을 수 없거나 UTF-8이 아니다 | 아무것도 쓰지 않고 실패한다 |
+
+`stale`은 "설치된 CLI와 다르다"는 뜻일 뿐 어느 쪽이 새것인지는 알려 주지 않는다. 설치된 CLI가 파일을 만든 CLI보다 오래되었을 수 있으니 먼저 CLI를 업데이트한다. 그다음 `refresh` 필드에 나온 명령을 실행한다. `stale`·`legacy` 파일이 없거나 `invalid`·`unreadable` 파일이 있으면 `refresh`는 `null`이다. 명령에는 `missing`이나 `unmarked`만 있는 묶음을 건너뛰도록 `--no-agents`, `--no-gjc`가 붙는다.
+
+```sh
+uv tool install --reinstall /path/to/llm-wiki-cli
+llm-wiki status --json   # refresh 필드의 명령을 그대로 실행한다
+```
+
+로컬 경로에서 설치할 때는 `--force`가 아니라 `--reinstall`을 쓴다. uv 0.9.5로 격리된 도구·캐시 디렉터리에서 재현해 보니, 버전을 올리지 않고 소스만 고친 패키지는 `--force`로는 캐시된 빌드가 다시 설치되어 수정이 반영되지 않았고 `--reinstall`로는 반영되었다. 다른 uv 버전에서는 결과가 다를 수 있다.
+
+`index.md`는 관리 파일에 들어가지 않는다. `init`은 `index.md`가 없을 때만 만들고, 이미 있는 파일은 `status`와 `init` 모두 비교하거나 고치지 않는다. 프로젝트 목록 블록은 `add-project`만 갱신한다.
+
+마커 안을 손으로 고친 내용은 갱신 때 덮어쓴다. 마커 밖 바이트(줄바꿈 형식 포함)는 그대로 둔다. 규칙과 스킬 파일의 front matter가 CLI 출력과 다르면 `front_matter: differs`로 알려 주기만 하고 고치지 않는다. 손으로 고친 legacy README는 바이트가 달라 `unmarked`로 보이며 `init`이 건드리지 않는다. 직접 고치거나 지운 뒤 `init`을 다시 실행한다. `AGENTS.md`나 GJC 파일이 `invalid`·`unreadable`이면 손으로 고치거나 `--no-agents`·`--no-gjc`로 건너뛴다. 위키 `README.md`는 건너뛸 옵션이 없으므로 고치거나 지운 뒤 다시 실행해야 한다.
+
+이 비교 기능이 없는 예전 CLI로 만든 작업 공간도 CLI를 새로 설치한 뒤 `llm-wiki status --json`의 `refresh` 명령을 한 번 실행하면 갱신된다. 옵션 없는 `init`은 건너뛴 그룹을 다시 만들고 마커 없는 `AGENTS.md`에 블록을 덧붙이므로 갱신 용도로 쓰지 않는다. 이전 버전 CLI에는 이 안내가 없으므로 첫 갱신은 사람이 직접 실행해야 한다.
 
 ## 기존 위키
 

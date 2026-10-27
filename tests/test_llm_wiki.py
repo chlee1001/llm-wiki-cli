@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import io
 import os
+import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -19,7 +21,7 @@ from llm_wiki.qmd import collection_name, qmd_search, qmd_sync, run_command
 from llm_wiki.records import promote, wrap
 from llm_wiki.redact import redact
 from llm_wiki.search import search
-from llm_wiki.templates import agents_block, gjc_rule, gjc_skill
+from llm_wiki.templates import GJC_FRONT_MATTER, agents_block, gjc_rule, gjc_skill, legacy_wiki_readme, wiki_readme
 
 
 @contextmanager
@@ -54,13 +56,14 @@ class LlmWikiTests(unittest.TestCase):
     def test_single_init_is_idempotent_and_replaces_agents_marker(self) -> None:
         init_wiki(self.root, "single", None, True, True)
         agents = self.root / "AGENTS.md"
-        agents.write_text("before\n<!-- llm-wiki:begin -->\nold\n<!-- llm-wiki:end -->\nafter\n", encoding="utf-8")
+        agents.write_text("before\n<!-- llm-wiki:begin -->\nstale marker body\n<!-- llm-wiki:end -->\nafter\n", encoding="utf-8")
         result = init_wiki(self.root, "single", None, True, True)
         content = agents.read_text(encoding="utf-8")
         self.assertIn("before", content)
         self.assertIn("after", content)
-        self.assertNotIn("old", content)
+        self.assertNotIn("stale marker body", content)
         self.assertEqual(content.count("<!-- llm-wiki:begin -->"), 1)
+        self.assertIn(str(agents.resolve()), result["updated"])
         self.assertIn(str((self.root / "llm-wiki" / "wiki.toml").resolve()), result["existing"])
         self.assertTrue((self.root / "llm-wiki" / "projects" / self.root.name / "knowledge").is_dir())
 
@@ -383,6 +386,18 @@ class LlmWikiTests(unittest.TestCase):
         fields = set(json.loads(payload))
         self.assertLessEqual(fields, {"topic", "task", "completed", "verification", "handoff", "not_tested", "agent", "project", "candidate"})
         self.assertLessEqual({"topic", "task", "completed"}, fields)
+        for phrase in ("not an automatic hook", "does not detect duplicates", "Writing the record is not cleanup", "only after checking", "where the evidence is", "including `handoff`", "shows origin, not proof"):
+            self.assertIn(phrase, skill)
+
+    def test_generated_guides_state_record_limits(self) -> None:
+        for guide in (agents_block("llm-wiki"), gjc_rule("llm-wiki")):
+            for phrase in ("`created` time", "newest record is not automatically right", "no automatic hook and no duplicate check", "does not clean up", "not that it was verified"):
+                self.assertIn(phrase, guide)
+            for phrase in ("`refresh` field", "differ", "update the CLI first", "`invalid`", "`unreadable`"):
+                self.assertIn(phrase, guide)
+            self.assertNotIn("older than the installed CLI", guide)
+            self.assertEqual(guide.count("<!-- llm-wiki:begin -->"), 1)
+            self.assertEqual(guide.count("<!-- llm-wiki:end -->"), 1)
 
     def test_redaction_covers_sample_secrets(self) -> None:
         text, count = redact("password=hunter2 Bearer abcdefghijklmnop AKIA1234567890ABCDEF eyJaaa.bbb.ccc https://u:p@example.com")
@@ -398,6 +413,39 @@ class LlmWikiTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertNotIn("hunter2", path.read_text(encoding="utf-8"))
         self.assertIn("wrap | demo | topic", (wiki.directory / "log.md").read_text(encoding="utf-8"))
+
+    def test_wrap_candidate_links_origin_session_without_claiming_evidence(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        wiki = discover(self.root)
+        path, candidates = wrap(wiki, "token=hunter2 topic", "task", "done", None, None, None, "gjc", None, ["possible fact"], self.root)
+        candidate = candidates[0].read_text(encoding="utf-8")
+        relative = path.relative_to(wiki.directory).as_posix()
+        self.assertIn(f'session: "{relative}"', candidate)
+        self.assertTrue((wiki.directory / relative).is_file())
+        self.assertNotIn("hunter2", candidate)
+        self.assertIn("status: needs-review", candidate)
+        self.assertIn("- None recorded.", candidate)
+        plain = promote(wiki, "plain", "body", [], "demo").read_text(encoding="utf-8")
+        self.assertNotIn("session:", plain)
+
+    def test_search_results_show_record_type_status_and_time(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        wiki = discover(self.root)
+        path, candidates = wrap(wiki, "needle topic", "needle task", "done", None, None, None, "gjc", None, ["needle claim"], self.root)
+        (wiki.directory / "shared" / "plain.md").write_text("needle without front matter\n", encoding="utf-8")
+        (wiki.directory / "shared" / "unclosed.md").write_text("---\ntype: session\nstatus: draft\nneedle\n", encoding="utf-8")
+        results, engine, _ = search(wiki, "needle", self.root, engine="text")
+        self.assertEqual(engine, "text")
+        by_path = {result["path"]: result for result in results}
+        session = by_path[path.relative_to(wiki.root).as_posix()]
+        self.assertEqual((session["type"], session["status"]), ("session", "draft"))
+        self.assertRegex(session["created"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
+        candidate = by_path[candidates[0].relative_to(wiki.root).as_posix()]
+        self.assertEqual((candidate["type"], candidate["status"]), ("candidate", "needs-review"))
+        plain = by_path["llm-wiki/shared/plain.md"]
+        self.assertEqual((plain["type"], plain["status"], plain["created"]), (None, None, None))
+        unclosed = by_path["llm-wiki/shared/unclosed.md"]
+        self.assertEqual((unclosed["type"], unclosed["status"], unclosed["created"]), (None, None, None))
 
     def test_promote_status_and_does_not_touch_knowledge(self) -> None:
         init_wiki(self.root, "single", "demo", False, False)
@@ -607,6 +655,7 @@ class LlmWikiTests(unittest.TestCase):
         self.assertIn(str(rule.resolve()), result["existing"])
         self.assertEqual(rule.read_text(encoding="utf-8").count("---\n"), 2)
         self.assertIn(str(agents.resolve()), first["created"])
+        self.assertEqual(result["updated"], [])
 
     def test_add_project_preserves_custom_index_content(self) -> None:
         init_wiki(self.root, "umbrella", "top", False, False)
@@ -853,6 +902,276 @@ class LlmWikiTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("# topic status: stable", first.read_text(encoding="utf-8"))
         self.assertIn('agent: "agent x"', first.read_text(encoding="utf-8"))
+
+
+BEGIN = b"<!-- llm-wiki:begin -->"
+END = b"<!-- llm-wiki:end -->"
+MANAGED = ["AGENTS.md", ".gjc/rules/llm-wiki.md", ".gjc/skills/llm-wiki-wrap/SKILL.md", "llm-wiki/README.md"]
+LEGACY_README = (
+    "# demo LLM Wiki\n\nRead `index.md` before using this wiki. Search the current project before work and write a session record "
+    "with `llm-wiki wrap` when work ends. Use candidates for uncertain claims.\n\nSource code, tests, and AGENTS.md outrank this wiki. "
+    "Do not record secrets.\n"
+)
+
+
+class ManagedFileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def path(self, relative: str) -> Path:
+        return self.root / relative
+
+    def snapshot(self) -> dict[str, bytes]:
+        return {str(path.relative_to(self.root)): path.read_bytes() for path in sorted(self.root.rglob("*")) if path.is_file()}
+
+    def status(self) -> dict[str, object]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(cli.main(["status", "--root", str(self.root), "--json"]), 0)
+        return json.loads(out.getvalue())
+
+    def states(self) -> dict[str, str]:
+        return {entry["path"]: entry["state"] for entry in self.status()["managed"]}
+
+    def refresh(self, *flags: str) -> str:
+        return shlex.join(["llm-wiki", "init", "--path", str(self.root), *flags])
+
+    def init(self, agents: bool = True, gjc: bool = True) -> dict[str, object]:
+        return init_wiki(self.root, "single", "demo", agents, gjc)
+
+    def write(self, relative: str, data: bytes) -> None:
+        self.path(relative).parent.mkdir(parents=True, exist_ok=True)
+        self.path(relative).write_bytes(data)
+
+    def stale_rule(self) -> None:
+        self.write(MANAGED[1], GJC_FRONT_MATTER.encode("utf-8") + BEGIN + b"\nold\n" + END + b"\n")
+
+    def test_status_reports_managed_files_and_writes_nothing(self) -> None:
+        self.init()
+        before = self.snapshot()
+        result = self.status()
+        self.assertEqual([entry["path"] for entry in result["managed"]], MANAGED)
+        self.assertEqual({entry["state"] for entry in result["managed"]}, {"current"})
+        self.assertEqual([entry.get("front_matter") for entry in result["managed"]], [None, "current", "current", None])
+        self.assertIsNone(result["refresh"])
+        self.assertEqual(self.snapshot(), before)
+        readme = self.path(MANAGED[3]).read_bytes()
+        self.assertEqual((readme.count(BEGIN), readme.count(END)), (1, 1))
+
+    def test_managed_states_cover_each_branch(self) -> None:
+        self.init(False, False)
+        with self.subTest("missing"):
+            before = self.snapshot()
+            managed = self.status()["managed"]
+            self.assertEqual([entry["state"] for entry in managed], ["missing", "missing", "missing", "current"])
+            self.assertTrue(all("front_matter" not in entry for entry in managed))
+            self.assertEqual(self.snapshot(), before)
+        with self.subTest("missing then init"):
+            result = self.init()
+            for relative in MANAGED[:3]:
+                self.assertIn(str(self.path(relative)), result["created"])
+                self.assertNotIn(str(self.path(relative)), result["updated"])
+            self.assertEqual(set(self.states().values()), {"current"})
+        cases = [
+            ("unmarked agents", MANAGED[0], b"my rules\n", "unmarked"),
+            ("unmarked rule", MANAGED[1], b"my rule\n", "unmarked"),
+            ("stale", MANAGED[0], BEGIN + b"\nold\n" + END + b"\n", "stale"),
+            ("stale rule", MANAGED[1], b"---\nmine: true\n---\n" + BEGIN + b"\nold\n" + END + b"\n", "stale"),
+            ("begin only", MANAGED[0], BEGIN + b"\nx\n", "invalid"),
+            ("end only", MANAGED[0], b"x\n" + END + b"\n", "invalid"),
+            ("end before begin", MANAGED[0], END + b"\n" + BEGIN + b"\n", "invalid"),
+            ("duplicate pair", MANAGED[0], (BEGIN + b"\nx\n" + END + b"\n") * 2, "invalid"),
+            ("leading orphan end", MANAGED[0], END + BEGIN + b"x" + END, "invalid"),
+            ("not utf-8", MANAGED[3], b"\xff\n", "unreadable"),
+        ]
+        for label, relative, data, state in cases:
+            with self.subTest(label):
+                original = self.path(relative).read_bytes()
+                self.write(relative, data)
+                before = self.snapshot()
+                entry = next(entry for entry in self.status()["managed"] if entry["path"] == relative)
+                self.assertEqual(entry["state"], state)
+                self.assertEqual(entry.get("front_matter"), "differs" if label == "stale rule" else None)
+                self.assertEqual(self.snapshot(), before)
+                self.write(relative, original)
+        with self.subTest("directory"):
+            agents = self.path(MANAGED[0]).read_bytes()
+            self.path(MANAGED[0]).unlink()
+            self.path(MANAGED[0]).mkdir()
+            self.assertEqual(self.states()[MANAGED[0]], "unreadable")
+            self.path(MANAGED[0]).rmdir()
+            self.write(MANAGED[0], agents)
+        with self.subTest(".gjc is a file"):
+            shutil.rmtree(self.path(".gjc"))
+            self.write(".gjc", b"not a directory\n")
+            before = self.snapshot()
+            states = self.states()
+            self.assertEqual((states[MANAGED[1]], states[MANAGED[2]]), ("unreadable", "unreadable"))
+            self.assertEqual(self.snapshot(), before)
+
+    def test_init_refresh_matches_prestate_and_keeps_outside_bytes(self) -> None:
+        self.init()
+        wiki = discover(self.root)
+        wrap(wiki, "topic", "task", "done", None, None, None, "gjc", None, ["possible fact"], self.root)
+        self.write("llm-wiki/projects/demo/knowledge/k.md", b"k\n")
+        index_path = self.path("llm-wiki/index.md")
+        index_path.write_bytes(index_path.read_bytes().replace(b"- [demo]", b"- [demo hand]") + b"Custom line.\n")
+        agents_prefix, agents_suffix = b"before\r\n", b"\r\nafter\r\n"
+        self.write(MANAGED[0], agents_prefix + BEGIN + b"\nold\n" + END + agents_suffix)
+        self.stale_rule()
+        readme_suffix = b"\r\nuser line\nmore\r\n"
+        self.write(MANAGED[3], BEGIN + b"\r\nold\n" + END + readme_suffix)
+        records = {key: value for key, value in self.snapshot().items() if not key.endswith(("AGENTS.md", "llm-wiki.md", "SKILL.md", "README.md"))}
+        self.assertEqual(list(self.states().values()), ["stale", "stale", "current", "stale"])
+        result = self.init()
+        self.assertEqual(result["updated"], [str(self.path(relative)) for relative in (MANAGED[0], MANAGED[1], MANAGED[3])])
+        self.assertFalse(set(result["created"]) & set(result["updated"]))
+        agents = self.path(MANAGED[0]).read_bytes()
+        self.assertTrue(agents.startswith(agents_prefix + BEGIN))
+        self.assertTrue(agents.endswith(END + agents_suffix))
+        self.assertTrue(self.path(MANAGED[1]).read_bytes().startswith(GJC_FRONT_MATTER.encode("utf-8") + BEGIN))
+        self.assertTrue(self.path(MANAGED[3]).read_bytes().endswith(END + readme_suffix))
+        self.assertEqual(set(self.states().values()), {"current"})
+        after = self.snapshot()
+        self.assertEqual(self.init()["updated"], [])
+        self.assertEqual(self.snapshot(), after)
+        self.assertEqual({key: value for key, value in after.items() if key in records}, records)
+
+    def test_init_appends_to_unmarked_agents_only(self) -> None:
+        self.init()
+        self.write(MANAGED[0], b"my rules\r\n")
+        self.write(MANAGED[1], b"my rule\n")
+        result = self.init()
+        agents = self.path(MANAGED[0]).read_bytes()
+        self.assertTrue(agents.startswith(b"my rules\r\n"))
+        self.assertEqual((agents.count(BEGIN), agents.count(END)), (1, 1))
+        self.assertEqual(agents[agents.index(BEGIN): agents.index(END) + len(END)].decode("utf-8"), agents_block("llm-wiki").rstrip("\n"))
+        self.assertIn(str(self.path(MANAGED[0])), result["updated"])
+        self.assertEqual(self.path(MANAGED[1]).read_bytes(), b"my rule\n")
+        self.assertNotIn(str(self.path(MANAGED[1])), result["updated"] + result["created"])
+        states = self.states()
+        self.assertEqual((states[MANAGED[0]], states[MANAGED[1]]), ("current", "unmarked"))
+
+    def test_init_replaces_only_untouched_legacy_readme(self) -> None:
+        self.assertEqual(legacy_wiki_readme("demo"), LEGACY_README)
+        self.init()
+        readme = self.path(MANAGED[3])
+        for label, data, state in (
+            ("legacy", LEGACY_README.encode("utf-8"), "legacy"),
+            ("legacy plus a line", (LEGACY_README + "custom\n").encode("utf-8"), "unmarked"),
+            ("custom", b"# My wiki\n", "unmarked"),
+            ("crlf legacy", LEGACY_README.replace("\n", "\r\n").encode("utf-8"), "unmarked"),
+        ):
+            with self.subTest(label):
+                readme.write_bytes(data)
+                self.assertEqual(self.states()[MANAGED[3]], state)
+                if state == "legacy":
+                    self.assertEqual(self.status()["refresh"], self.refresh())
+                result = self.init()
+                self.assertEqual(str(readme) in result["updated"], state == "legacy")
+                self.assertEqual(readme.read_bytes(), wiki_readme("demo").encode("utf-8") if state == "legacy" else data)
+
+    def test_front_matter_difference_is_reported_and_kept(self) -> None:
+        self.init()
+        front = b"---\r\nalwaysApply: true\r\n---\r\n"
+        self.write(MANAGED[1], front + BEGIN + b"\nold\n" + END + b"\n")
+        entry = self.status()["managed"][1]
+        self.assertEqual((entry["state"], entry["front_matter"]), ("stale", "differs"))
+        self.init()
+        self.assertTrue(self.path(MANAGED[1]).read_bytes().startswith(front + BEGIN))
+        entry = self.status()["managed"][1]
+        self.assertEqual((entry["state"], entry["front_matter"]), ("current", "differs"))
+        self.assertIsNone(self.status()["refresh"])
+
+    def test_init_rejects_invalid_or_unreadable_targets_before_writing(self) -> None:
+        with self.subTest("fresh root"):
+            self.write(MANAGED[0], BEGIN + b"\nonly begin\n")
+            with self.assertRaisesRegex(WikiError, "--no-agents"):
+                self.init()
+            self.assertFalse(self.path("llm-wiki").exists())
+            self.path(MANAGED[0]).unlink()
+        self.init()
+        with self.subTest("late invalid skill"):
+            self.write(MANAGED[0], BEGIN + b"\nold\n" + END + b"\n")
+            self.write(MANAGED[2], END + BEGIN + b"x" + END)
+            before = self.snapshot()
+            with self.assertRaises(WikiError) as raised:
+                self.init()
+            self.assertIn(MANAGED[2], str(raised.exception))
+            self.assertIn("--no-gjc", str(raised.exception))
+            self.assertEqual(self.snapshot(), before)
+        with self.subTest("opted-out invalid skill and stale rule"):
+            self.stale_rule()
+            before = self.snapshot()
+            result = self.init(True, False)
+            for relative in MANAGED[1:3]:
+                self.assertEqual(self.path(relative).read_bytes(), before[relative])
+                self.assertNotIn(str(self.path(relative)), result["updated"])
+            self.assertIn(str(self.path(MANAGED[0])), result["updated"])
+        with self.subTest("opted-out invalid agents"):
+            self.write(MANAGED[0], BEGIN + b"\nonly begin\n")
+            self.init(False, False)
+            self.assertEqual(self.path(MANAGED[0]).read_bytes(), BEGIN + b"\nonly begin\n")
+        with self.subTest("unreadable readme"):
+            self.write(MANAGED[3], b"\xff\n")
+            before = self.snapshot()
+            with self.assertRaises(WikiError) as raised:
+                self.init(False, False)
+            self.assertIn("fix or delete it", str(raised.exception))
+            self.assertNotIn("--no-", str(raised.exception))
+            self.assertEqual(self.snapshot(), before)
+
+    def test_status_refresh_command_derives_opt_out_flags(self) -> None:
+        stale_agents = BEGIN + b"\nold\n" + END + b"\n"
+        cases = [
+            ("all current", (True, True), {}, None),
+            ("agents stale", (True, True), {MANAGED[0]: stale_agents}, ()),
+            ("agents unmarked, rule stale", (True, True), {MANAGED[0]: b"my rules\n", MANAGED[1]: None}, ("--no-agents",)),
+            ("agents stale, gjc missing", (True, False), {MANAGED[0]: stale_agents}, ("--no-gjc",)),
+            ("invalid", (True, True), {MANAGED[0]: stale_agents, MANAGED[2]: END + BEGIN + END}, None),
+        ]
+        for label, groups, writes, flags in cases:
+            with self.subTest(label):
+                self.temp.cleanup()
+                self.root.mkdir()
+                self.init(*groups)
+                for relative, data in writes.items():
+                    self.stale_rule() if data is None else self.write(relative, data)
+                refresh = self.status()["refresh"]
+                self.assertEqual(refresh, None if flags is None else self.refresh(*flags))
+                if flags is None:
+                    continue
+                skipped = [relative for relative, state in self.states().items() if state in {"unmarked", "missing"}]
+                before = self.snapshot()
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(shlex.split(refresh)[1:]), 0)
+                states = self.states()
+                for relative in skipped:
+                    self.assertEqual(self.path(relative).read_bytes() if relative in before else None, before.get(relative))
+                self.assertEqual({state for relative, state in states.items() if relative not in skipped}, {"current"})
+                self.assertIsNone(self.status()["refresh"])
+        with self.subTest("legacy wiki"):
+            self.temp.cleanup()
+            self.path("llm-wiki").mkdir(parents=True)
+            self.write("llm-wiki/index.md", b"legacy\n")
+            result = self.status()
+            self.assertEqual((result["managed"], result["refresh"]), ([], None))
+
+    def test_add_project_rejects_leading_orphan_projects_marker(self) -> None:
+        init_wiki(self.root, "umbrella", "top", False, False)
+        index_path = self.path("llm-wiki/index.md")
+        index_path.write_bytes(b"<!-- llm-wiki:projects:end -->\n" + index_path.read_bytes())
+        before = index_path.read_bytes()
+        config_before = self.path("llm-wiki/wiki.toml").read_bytes()
+        with self.assertRaises(WikiError):
+            register_project(discover(self.root), "api", "api")
+        self.assertEqual(index_path.read_bytes(), before)
+        self.assertEqual(self.path("llm-wiki/wiki.toml").read_bytes(), config_before)
+        self.assertFalse(self.path("llm-wiki/projects/api").exists())
 
 
 if __name__ == "__main__":
