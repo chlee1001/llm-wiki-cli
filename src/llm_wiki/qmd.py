@@ -41,10 +41,9 @@ def collections(runner: Runner = run_command) -> set[str]:
     }
 
 
-def collection_targets(wiki: Wiki, project_names: list[str] | None = None) -> list[tuple[str, Path, str]]:
+def collection_targets(wiki: Wiki) -> list[tuple[str, Path, str]]:
     targets = [("shared", wiki.directory / "shared", "shared wiki")]
-    names = project_names if project_names is not None else list(wiki.projects)
-    targets.extend((name, wiki.directory / "projects" / name, f"{name} project wiki") for name in names)
+    targets.extend((name, wiki.directory / "projects" / name, f"{name} project wiki") for name in wiki.projects)
     return targets
 
 
@@ -85,8 +84,10 @@ def qmd_sync(wiki: Wiki, embed: bool = False, runner: Runner = run_command, exec
 
 def qmd_search(query: str, names: list[str], wiki: Wiki, limit: int, runner: Runner = run_command) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
+    directories = {name: directory for name, directory, _ in collection_targets(wiki)}
     for name in names:
-        command = ["qmd", "search", query, "--json", "-n", str(limit), "-c", collection_name(wiki, name)]
+        coll = collection_name(wiki, name)
+        command = ["qmd", "search", query, "--json", "-n", str(limit), "-c", coll]
         completed = runner(command, 60)
         if completed.returncode:
             raise WikiError(completed.stderr.strip() or "qmd search failed")
@@ -96,12 +97,11 @@ def qmd_search(query: str, names: list[str], wiki: Wiki, limit: int, runner: Run
             raise WikiError("Invalid qmd search response.") from exc
         if not isinstance(records, list):
             raise WikiError("Unexpected qmd search response.")
-        prefix = f"qmd://{collection_name(wiki, name)}/"
+        prefix = f"qmd://{coll}/"
         for record in records:
             if not isinstance(record, dict) or not isinstance(record.get("file"), str) or not record["file"].startswith(prefix):
                 raise WikiError("Unexpected qmd search response.")
-            path = next(directory for collection, directory, _ in collection_targets(wiki) if collection == name)
-            path = (path / record["file"].removeprefix(prefix)).relative_to(wiki.root).as_posix()
+            path = (directories[name] / record["file"].removeprefix(prefix)).relative_to(wiki.root).as_posix()
             try:
                 score = float(record.get("score", 0))
             except (TypeError, ValueError):

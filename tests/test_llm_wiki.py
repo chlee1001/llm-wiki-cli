@@ -5,8 +5,10 @@ import io
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -167,6 +169,7 @@ class LlmWikiTests(unittest.TestCase):
         self.assertEqual(results[0]["score"], 4.0)
         self.assertEqual(results[0]["path"], "llm-wiki/shared/q.md")
         self.assertEqual(results[0]["snippets"], ["needle"])
+        self.assertEqual({result["path"] for result in results}, {"llm-wiki/shared/q.md", "llm-wiki/projects/demo/q.md"})
         fallback, engine, note = search(wiki, "needle", self.root, engine="auto", qmd_available=False)
         self.assertEqual(engine, "text")
         self.assertIsNone(note)
@@ -262,6 +265,11 @@ class LlmWikiTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         with self.assertRaises(WikiError):
             promote(wiki, "title", "body", [], None)
+        with self.assertRaises(WikiError):
+            wrap(wiki, "topic", "task", "done", None, None, None, None, None, [], legacy_root)
+        with self.assertRaises(WikiError):
+            add_project(wiki, "other", "other")
+        self.assertEqual([path.name for path in (legacy_root / "llm-wiki").iterdir()], ["index.md"])
 
     def test_init_refuses_legacy_without_creating_files(self) -> None:
         legacy = self.root / "llm-wiki"
@@ -285,6 +293,104 @@ class LlmWikiTests(unittest.TestCase):
             {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()},
             original,
         )
+
+    def make_case_variant_wiki(self) -> Path:
+        init_wiki(self.root, "umbrella", "top", False, False)
+        variant = self.root / "LLM-Wiki"
+        (self.root / "llm-wiki").rename(variant)
+        return variant
+
+    def test_discovery_finds_case_variant_wiki_from_cwd(self) -> None:
+        variant = self.make_case_variant_wiki()
+        nested = self.root / "apps" / "service"
+        nested.mkdir(parents=True)
+        with in_directory(nested), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LLM_WIKI_ROOT", None)
+            wiki = discover()
+        self.assertEqual(wiki.name, "top")
+        self.assertEqual(wiki.directory.name, "LLM-Wiki")
+        self.assertEqual(wiki.directory.resolve(), variant.resolve())
+
+    def test_reinit_reuses_case_variant_wiki(self) -> None:
+        self.make_case_variant_wiki()
+        result = init_wiki(self.root, None, "top", False, False)
+        self.assertEqual(result["mode"], "umbrella")
+        self.assertEqual([child.name for child in self.root.iterdir() if child.name.casefold() == "llm-wiki"], ["LLM-Wiki"])
+        self.assertIn(str(self.root.resolve() / "LLM-Wiki" / "wiki.toml"), result["existing"])
+
+    def test_init_points_agents_and_gjc_at_case_variant_wiki(self) -> None:
+        self.make_case_variant_wiki()
+        init_wiki(self.root, None, "top", True, True)
+        self.assertIn("`LLM-Wiki/index.md`", (self.root / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn("`LLM-Wiki/index.md`", (self.root / ".gjc" / "rules" / "llm-wiki.md").read_text(encoding="utf-8"))
+
+    def test_unlistable_folder_still_finds_exact_wiki(self) -> None:
+        outer = self.root / "outer"
+        inner = outer / "inner"
+        legacy = self.root / "legacy-root"
+        (inner / "proj").mkdir(parents=True)
+        (legacy / "llm-wiki").mkdir(parents=True)
+        (legacy / "llm-wiki" / "index.md").write_text("old", encoding="utf-8")
+        init_wiki(outer, "single", "outer", False, False)
+        init_wiki(inner, "single", "inner", False, False)
+        unlistable = {inner.resolve(), legacy.resolve()}
+        real_iterdir = Path.iterdir
+
+        def iterdir(path: Path):
+            if path.resolve() in unlistable:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_iterdir(path)
+
+        with patch.object(Path, "iterdir", iterdir):
+            self.assertEqual(discover(inner / "proj").name, "inner")
+            with self.assertRaisesRegex(WikiError, "legacy"):
+                init_wiki(legacy, "single", None, False, False)
+        self.assertFalse((legacy / "llm-wiki" / "wiki.toml").exists())
+
+    def test_unsearchable_unconfigured_wiki_dir_falls_through_to_outer_wiki(self) -> None:
+        init_wiki(self.root, "single", "outer", False, False)
+        blocked = self.root.resolve() / "child" / "llm-wiki"
+        blocked.mkdir(parents=True)
+        real_stat = os.stat
+        denied = []
+
+        def stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+            if Path(os.fspath(path)).parent == blocked:
+                denied.append(path)
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        with patch("os.stat", stat):
+            self.assertEqual(discover(self.root / "child").name, "outer")
+        self.assertGreater(len(denied), 0)
+
+    def test_init_refuses_inside_case_variant_wiki_without_changes(self) -> None:
+        variant = self.make_case_variant_wiki()
+        nested = variant / "shared" / "knowledge"
+        original = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        with self.assertRaisesRegex(WikiError, "Cannot initialize inside an existing wiki directory"):
+            init_wiki(nested, "single", None, True, True)
+        self.assertEqual(
+            {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()},
+            original,
+        )
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset")
+    def test_wrap_uses_local_time_for_folder_and_created(self) -> None:
+        # Pin a non-UTC zone so a UTC clock cannot pass by accident.
+        # POSIX TZ string, so no zone database is needed.
+        try:
+            with patch.dict(os.environ, {"TZ": "KST-9"}):
+                time.tzset()
+                init_wiki(self.root, "single", "demo", False, False)
+                path, _ = wrap(discover(self.root), "topic", "task", "done", None, None, None, "agent", None, [], self.root)
+        finally:
+            time.tzset()
+        created = next(line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("created: "))
+        when = datetime.fromisoformat(created.removeprefix("created: "))
+        self.assertEqual(when.utcoffset().total_seconds(), 9 * 3600)
+        self.assertEqual(path.parent.relative_to(path.parents[2]).as_posix(), when.strftime("%Y/%m"))
+        self.assertIn(when.strftime("[%Y-%m-%d %H:%M]"), (self.root / "llm-wiki" / "log.md").read_text(encoding="utf-8"))
 
     def test_init_refuses_inside_legacy_without_changes(self) -> None:
         legacy = self.root / "legacy" / "llm-wiki"
@@ -336,8 +442,8 @@ class LlmWikiTests(unittest.TestCase):
         result = init_wiki(self.root, "single", "demo", True, True)
         self.assertEqual(agents.read_bytes(), initial_agents)
         self.assertEqual(rule.read_bytes(), initial_rule)
-        self.assertNotIn(str(agents), result["created"])
-        self.assertNotIn(str(rule), result["created"])
+        self.assertNotIn(str(agents.resolve()), result["created"])
+        self.assertNotIn(str(rule.resolve()), result["created"])
         self.assertIn(str(agents.resolve()), result["existing"])
         self.assertIn(str(rule.resolve()), result["existing"])
         self.assertEqual(rule.read_text(encoding="utf-8").count("---\n"), 2)
@@ -385,16 +491,209 @@ class LlmWikiTests(unittest.TestCase):
         prose, _ = redact("A cookie is a small piece of text.")
         self.assertEqual(prose, "A cookie is a small piece of text.")
 
+    def test_redaction_covers_other_separators_and_secret_carriers(self) -> None:
+        cases = {
+            'password := "hunter2"': "password := [REDACTED_SECRET]",
+            "'password' => 'hunter2',": "'password' => [REDACTED_SECRET],",
+            "SECRET_KEY = 'django-insecure-abc123'": "SECRET_KEY = [REDACTED_SECRET]",
+            "redis://:hunter2@localhost:6379/0": "redis://[REDACTED_CREDENTIALS]@localhost:6379/0",
+            'curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://api': 'curl -H "Authorization: Basic [REDACTED_TOKEN]" https://api',
+            'curl -H "Cookie: sessionid=abc123xyz" https://x': 'curl -H "Cookie: [REDACTED_AUTH]" https://x',
+            r'"{\"password\":\"a\\\"b hunter2\"}"': r'"{\"password\":[REDACTED_SECRET]}"',
+            "<password>hunter2</password>": "<password>[REDACTED_SECRET]</password>",
+            "sessionid=abc123xyz next": "sessionid=[REDACTED_TOKEN] next",
+            'Cookie: AUTH="Zx9QpL2rT"; HttpOnly': "Cookie: [REDACTED_AUTH]",
+            'Set-Cookie: a=b; c="x y"; remember=QQQ': "Set-Cookie: [REDACTED_AUTH]",
+            r'curl -H "Cookie: AUTH=\"Zx9\"" -H "X: keep"': 'curl -H "Cookie: [REDACTED_AUTH]" -H "X: keep"',
+            '{"Cookie": "AUTH=Zx9"}': '{"Cookie": [REDACTED_AUTH]',
+            "{'Set-Cookie': 'AUTH=Zx9'}": "{'Set-Cookie': [REDACTED_AUTH]",
+            'curl -H "Cookie: AUTH="Zx9secret -H "X: y"': 'curl -H "Cookie: [REDACTED_AUTH]',
+            'curl -H "Cookie: AUTH=x"tail -H "X: keep"': 'curl -H "Cookie: [REDACTED_AUTH]',
+            '"body":"{\\"Cookie\\":\\"AUTH=Zx9\\"}"': '"body":"{\\"Cookie\\": [REDACTED_AUTH]',
+            '{\\"Set-Cookie\\": \\"AUTH=Zx9\\"}': '{\\"Set-Cookie\\": [REDACTED_AUTH]',
+            "x-session-id=abc123 next": "x-session-id=[REDACTED_TOKEN] next",
+            "session-key=abc next": "session-key=[REDACTED_TOKEN] next",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(redact(raw)[0], expected)
+
+    def test_redaction_keeps_earlier_placeholders_intact(self) -> None:
+        text, count = redact("token=ghp_" + "a" * 36 + " session=eyJa.b.c")
+        self.assertEqual(text, "token=[REDACTED_TOKEN] session=[REDACTED_JWT]")
+        self.assertEqual(count, 2)
+        partial, partial_count = redact("password=[REDACTED_hunter2")
+        self.assertEqual(partial, "password=[REDACTED_SECRET]")
+        self.assertEqual(partial_count, 1)
+        for value in ("[redacted_hunter]", "[REDACTED_MyPass]", "[REDACTED_X]hunter2", "[a]b]"):
+            self.assertEqual(redact(f"password={value}"), ("password=[REDACTED_SECRET]", 1))
+        self.assertEqual(redact("token=[REDACTED_TOKEN], next"), ("token=[REDACTED_TOKEN], next", 0))
+
+    def test_redaction_covers_whole_unquoted_value(self) -> None:
+        cases = {
+            "password=Xk9;mQ2)vLp next": "password=[REDACTED_SECRET] next",
+            "password=abc,def": "password=[REDACTED_SECRET]",
+            "(password=abc)": "(password=[REDACTED_SECRET])",
+            "token=abc123, next": "token=[REDACTED_SECRET], next",
+            "sid=xy;z;": "sid=[REDACTED_TOKEN];",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(redact(raw)[0], expected)
+
+    def test_redaction_keeps_fields_after_quoted_value(self) -> None:
+        cases = {
+            '{"password":"x","user":"bob"}': ('{"password":[REDACTED_SECRET],"user":"bob"}', 1),
+            'password="x",user=bob': ("password=[REDACTED_SECRET],user=bob", 1),
+            '["password": "x"]': ('["password": [REDACTED_SECRET]]', 1),
+            'password="abc"def': ("password=[REDACTED_SECRET]", 1),
+            'password="a b".': ("password=[REDACTED_SECRET].", 1),
+            '`DB_PASSWORD="a b"`': ("`DB_PASSWORD=[REDACTED_SECRET]", 1),
+            "\"X_PASSWORD='a b'\"": ('"X_PASSWORD=[REDACTED_SECRET]', 1),
+            'password="a b"def': ("password=[REDACTED_SECRET]", 1),
+            'password="a b"def.': ("password=[REDACTED_SECRET].", 1),
+            '{"password":"abc\\",def","user":"bob"}': ('{"password":[REDACTED_SECRET],"user":"bob"}', 1),
+            "password='a\\'b c',x=1": ("password=[REDACTED_SECRET],x=1", 1),
+            'password="a b c\nnext': ("password=[REDACTED_SECRET]\nnext", 1),
+            "secret: 'x y": ("secret: [REDACTED_SECRET]", 1),
+            "password=sk-abcdefghijklmnopqrstu,XYZ": ("password=[REDACTED_SECRET]", 2),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(redact(raw), expected)
+
+    def test_redaction_handles_escaped_and_repeated_quotes(self) -> None:
+        cases = {
+            '"body":"{\\"password\\":\\"hunter2\\",\\"user\\":\\"bob\\"}"':
+                ('"body":"{\\"password\\":[REDACTED_SECRET],\\"user\\":\\"bob\\"}"', 1),
+            '{"cmd":"export DB_PASSWORD=\\"a b\\""}': ('{"cmd":"export DB_PASSWORD=[REDACTED_SECRET]}', 1),
+            "password: 'it''s a secret'": ("password: [REDACTED_SECRET]", 1),
+            'password = """a b"""': ("password = [REDACTED_SECRET]", 1),
+            "password=\"a b\"' c d'": ("password=[REDACTED_SECRET]", 1),
+            "password=\"a\"b'c d": ("password=[REDACTED_SECRET]", 1),
+            "\"X_PASSWORD='a b'\" user=keep": ('"X_PASSWORD=[REDACTED_SECRET] user=keep', 1),
+            # A stray quote followed by a delimiter must not mask the rest of a short line.
+            "token=abc\" user=bob": ("token=[REDACTED_SECRET] user=bob", 1),
+            "password=$'a b' next": ("password=[REDACTED_SECRET] next", 1),
+            'password=abc"def ghi" next': ("password=[REDACTED_SECRET] next", 1),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(redact(raw), expected)
+
+    def test_redaction_backslash_terminated_value_runs_to_line_end(self) -> None:
+        # Documented trade-off: a backslash escapes the closing quote, so the value stays open.
+        self.assertEqual(redact("PASSWORD='abc\\' USER=bob"), ("PASSWORD=[REDACTED_SECRET]", 1))
+
+    def test_log_heading_is_redacted_once(self) -> None:
+        init_wiki(self.root, "single", "demo", False, False)
+        wiki = discover(self.root)
+        promote(wiki, '{"password":"x","user":"bob"}', "body", [], "demo")
+        log = (wiki.directory / "log.md").read_text(encoding="utf-8")
+        self.assertIn('{"password":[REDACTED_SECRET],"user":"bob"}', log)
+
+    def test_redaction_is_linear_on_punctuation_runs(self) -> None:
+        started = time.monotonic()
+        for raw in ("token=a" + ")" * 200_000 + "b", "password=[" + "]" * 200_000 + "x", 'password="a ' * 50_000,
+                    'password="a\\' * 50_000, '"password":"' + '\\"' * 100_000, "a" * 200_000,
+                    "password=" + "'\"" * 100_000, 'password="x"' + '"a"' * 100_000, "password=x" + '"a' * 100_000, '\\"password\\":\\"' + "\\x" * 100_000,
+                    ):
+            redact(raw)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_redaction_is_linear_on_repeated_keywords_and_escapes(self) -> None:
+        for raw in ('password=\\"' + "\\\\\\\\a" * 30, "token" * 20_000, "session" * 15_000, "<" + "token" * 20_000,
+                    "password=x" + '",\\' * 20_000, "eyJ-" * 25_000, '"Cookie:' * 40_000,
+                    'token=x\\" ' * 20_000, "\n".join([('token=x\\" ' * 26)[:250]] * 2_000), "a-" * 50_000):
+            with self.subTest(raw=raw[:20], length=len(raw)):
+                started = time.monotonic()
+                redact(raw)
+                self.assertLess(time.monotonic() - started, 2)
+
+    def test_redaction_never_retries_a_shorter_separator(self) -> None:
+        for raw in ("token := ghp_" + "a" * 36, "token => ghp_" + "a" * 36):
+            self.assertEqual(redact(raw)[0], raw[:9] + "[REDACTED_TOKEN]")
+        self.assertEqual(redact("password==abc next")[0], "password=[REDACTED_SECRET] next")
+
+    def test_redaction_reads_whole_key_names(self) -> None:
+        tail = "_v" * 100
+        long_key = f"x_password{tail}"
+        self.assertEqual(redact(f"{long_key}=hunter2 ok")[0], f"{long_key}=[REDACTED_SECRET] ok")
+        tag = f"db_password{tail}"
+        self.assertEqual(redact(f"<{tag}>x</{tag}>")[0], f"<{tag}>[REDACTED_SECRET]</{tag}>")
+        session = f"xsession{tail}"
+        self.assertEqual(redact(f"mysid=abc {session}=def sidebar=keep")[0],
+                         f"mysid=[REDACTED_TOKEN] {session}=[REDACTED_TOKEN] sidebar=keep")
+        prefix = "legacy_reporting" + "_v" * 100
+        for raw in (f"{prefix}_password=hunter2 ok", f"{prefix}_xsessionid=def ok"):
+            self.assertEqual(redact(raw)[0], raw.split("=")[0] + "=" + ("[REDACTED_SECRET]" if "password" in raw else "[REDACTED_TOKEN]") + " ok")
+        self.assertEqual(redact(f"<{prefix}_db_token>x</{prefix}_db_token>")[0],
+                         f"<{prefix}_db_token>[REDACTED_SECRET]</{prefix}_db_token>")
+        self.assertEqual(redact(f"{prefix}_name=keep ok")[0], f"{prefix}_name=keep ok")
+
+    def test_redaction_masks_jwt_inside_dash_runs(self) -> None:
+        jwt = "eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl"
+        for raw, expected in ((f"id {jwt} ok", "id [REDACTED_JWT] ok"),
+                              (f"x-{jwt} ok", "x-[REDACTED_JWT] ok"),
+                              (f"eyJ-{jwt} ok", "[REDACTED_JWT] ok"),
+                              ("xeyJa.b.c ok", "xeyJa.b.c ok")):
+            self.assertEqual(redact(raw)[0], expected)
+
+    def test_redaction_stops_scanning_after_a_stray_quote(self) -> None:
+        self.assertEqual(redact('password=x",y next')[0], "password=[REDACTED_SECRET] next")
+        self.assertEqual(redact("password=x\",y'z next")[0], "password=[REDACTED_SECRET]")
+        # With 256 or more characters left on the line, a stray quote masks the rest of it.
+        self.assertEqual(redact('password=x" ' + "k" * 254)[0], "password=[REDACTED_SECRET] " + "k" * 254)
+        self.assertEqual(redact('password=x" ' + "k" * 255)[0], "password=[REDACTED_SECRET]")
+        # A quoted segment that closes stays a segment however long it is.
+        self.assertEqual(redact(f'password=x"{"y" * 300}" next')[0], "password=[REDACTED_SECRET] next")
+
+    def test_init_refuses_git_repo_named_like_wiki(self) -> None:
+        (self.root / "llm-wiki" / ".git").mkdir(parents=True)
+        with self.assertRaisesRegex(WikiError, "git repository"):
+            init_wiki(self.root, "single", "demo", False, False)
+        self.assertFalse((self.root / "llm-wiki" / "wiki.toml").exists())
+
+    def test_umbrella_scan_skips_wiki_named_folders(self) -> None:
+        # Only reachable when two case variants can coexist; the target wiki is the plain one.
+        (self.root / "llm-wiki").mkdir()
+        if (self.root / "LLM-Wiki").exists():
+            self.skipTest("needs a case-sensitive filesystem")
+        (self.root / "api" / ".git").mkdir(parents=True)
+        (self.root / "LLM-Wiki" / ".git").mkdir(parents=True)
+        result = init_wiki(self.root, "umbrella", "top", False, False)
+        self.assertEqual(result["projects"], {"api": "api"})
+
+    def test_init_umbrella_accepts_root_name_that_is_not_a_project_name(self) -> None:
+        root = self.root / "My Workspace"
+        (root / "api" / ".git").mkdir(parents=True)
+        result = init_wiki(root, "umbrella", None, False, False)
+        self.assertEqual(result["projects"], {"api": "api"})
+        self.assertEqual(discover(root).name, "My Workspace")
+        with self.assertRaisesRegex(WikiError, "Project name"):
+            init_wiki(self.root / "Other Space", "single", None, False, False)
+        self.assertFalse((self.root / "Other Space").exists())
+        bad = self.root / "bad"
+        bad.mkdir()
+        with self.assertRaisesRegex(WikiError, "control characters"):
+            init_wiki(bad, "umbrella", "bad\x7fname", False, False)
+        with self.assertRaisesRegex(WikiError, "valid wiki configuration"):
+            init_wiki(bad, "umbrella", "bad\udcffname", False, False)
+        self.assertEqual(list(bad.iterdir()), [])
+
+    def test_init_fails_without_residue_when_wiki_toml_is_a_directory(self) -> None:
+        (self.root / "llm-wiki" / "wiki.toml").mkdir(parents=True)
+        with self.assertRaises(OSError):
+            init_wiki(self.root, "single", "demo", False, False)
+        self.assertEqual([path.name for path in (self.root / "llm-wiki").iterdir()], ["wiki.toml"])
+
     def test_record_single_line_fields_and_wrap_collision(self) -> None:
         init_wiki(self.root, "single", "demo", False, False)
         wiki = discover(self.root)
         with patch("llm_wiki.records._now") as now:
-            from datetime import datetime, timezone
             now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
             first, _ = wrap(wiki, "topic\nstatus: stable", "task", "done", None, None, None, "agent\nx", None, [], self.root)
             second, _ = wrap(wiki, "topic\nstatus: stable", "task", "done", None, None, None, "agent\nx", None, [], self.root)
         self.assertNotEqual(first, second)
         self.assertIn("# topic status: stable", first.read_text(encoding="utf-8"))
+        self.assertIn('agent: "agent x"', first.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

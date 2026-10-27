@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from .config import Wiki, WikiError, current_project, require_writable
+from .config import Wiki, current_project, require_writable
 from .redact import redact
 
 
@@ -17,7 +17,8 @@ def slug(value: str, fallback: str = "session") -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    # Local time with offset, matching the session folders init creates and the log.md stamps.
+    return datetime.now().astimezone()
 
 
 def _clean(value: str) -> str:
@@ -35,10 +36,11 @@ def _target(wiki: Wiki, project: str | None, shared: bool = False) -> tuple[Path
 
 
 def append_log(wiki: Wiki, when: datetime, action: str, project: str, topic: str, path: Path) -> None:
-    stamp = when.astimezone().strftime("%Y-%m-%d %H:%M")
+    """Append a log entry; callers pass an already redacted single-line topic."""
+    stamp = when.strftime("%Y-%m-%d %H:%M")
     relative = path.relative_to(wiki.directory).as_posix()
     with (wiki.directory / "log.md").open("a", encoding="utf-8") as handle:
-        handle.write(f"\n## [{stamp}] {action} | {project} | {_clean(topic)}\n\n- `{relative}`\n")
+        handle.write(f"\n## [{stamp}] {action} | {project} | {topic}\n\n- `{relative}`\n")
 
 
 def promote(wiki: Wiki, title: str, body: str, sources: list[str], project: str | None, shared: bool = False, now: datetime | None = None) -> Path:

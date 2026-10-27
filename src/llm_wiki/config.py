@@ -39,13 +39,31 @@ def is_wiki_dir_name(directory: Path) -> bool:
 
 
 def is_legacy_dir(directory: Path) -> bool:
-    return is_wiki_dir_name(directory) and directory.is_dir() and not (directory / "wiki.toml").is_file() and (
-        (directory / "SCHEMA.md").is_file() or (directory / "index.md").is_file()
+    return is_wiki_dir_name(directory) and os.path.isdir(directory) and not has_config(directory) and (
+        os.path.isfile(directory / "SCHEMA.md") or os.path.isfile(directory / "index.md")
     )
 
 
-def _load(root: Path, legacy: bool = False) -> Wiki:
-    directory = root / "llm-wiki"
+def has_config(directory: Path) -> bool:
+    # os.path checks return False on permission errors; Path methods raise them before Python 3.14.
+    return os.path.isfile(directory / "wiki.toml")
+
+
+def wiki_dirs(parent: Path) -> list[Path]:
+    """Return child directories named llm-wiki in any case, configured and exact names first."""
+    try:
+        matches = [child for child in parent.iterdir() if is_wiki_dir_name(child) and os.path.isdir(child)]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except PermissionError:
+        # Searchable but unlistable: fall back to the exact name, which only needs search permission.
+        exact = parent / "llm-wiki"
+        return [exact] if os.path.isdir(exact) else []
+    return sorted(matches, key=lambda child: (not has_config(child), child.name != "llm-wiki", child.name))
+
+
+def _load(directory: Path, legacy: bool = False) -> Wiki:
+    root = directory.parent
     if legacy:
         return Wiki(root, directory, "legacy", directory.parent.name, {}, True)
     try:
@@ -75,11 +93,11 @@ def discover(start: Path | None = None) -> Wiki:
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
-        directory = candidate / "llm-wiki"
-        if (directory / "wiki.toml").is_file():
-            return _load(candidate)
-        if is_legacy_dir(directory):
-            return _load(candidate, legacy=True)
+        for directory in wiki_dirs(candidate):
+            if has_config(directory):
+                return _load(directory)
+            if is_legacy_dir(directory):
+                return _load(directory, legacy=True)
     raise WikiError("No llm-wiki found. Run 'llm-wiki init' first.")
 
 
@@ -112,13 +130,14 @@ def current_project(wiki: Wiki, cwd: Path | None = None, override: str | None = 
 
 def write_config(wiki: Wiki) -> None:
     values = [wiki.mode, wiki.name, *wiki.projects.keys(), *wiki.projects.values()]
-    if any(any(ord(character) < 32 for character in value) for value in values):
+    if any(any(ord(character) < 32 or ord(character) == 127 for character in value) for value in values):
         raise WikiError("Wiki configuration values must not contain control characters.")
     lines = ["[wiki]", "version = 1", f"mode = {json.dumps(wiki.mode, ensure_ascii=False)}", f"name = {json.dumps(wiki.name, ensure_ascii=False)}", ""]
     for name in sorted(wiki.projects):
         lines.extend((f"[projects.{json.dumps(name, ensure_ascii=False)}]", f"path = {json.dumps(wiki.projects[name], ensure_ascii=False)}", ""))
     content = "\n".join(lines)
     try:
+        content.encode("utf-8")  # reject lone surrogates before anything touches the disk
         tomllib.loads(content)
     except (ValueError, TypeError) as exc:
         raise WikiError("Unable to write valid wiki configuration.") from exc
@@ -148,8 +167,6 @@ def add_project(wiki: Wiki, name: str, path: str) -> Wiki:
         clean_path = (root_resolved / supplied).resolve().relative_to(root_resolved).as_posix()
     except ValueError:
         raise WikiError("Project path must be relative to the wiki root.")
-    if clean_path == "":
-        clean_path = "."
     if clean_path in wiki.projects.values():
         raise WikiError(f"Project path already exists: {clean_path}")
     projects = dict(wiki.projects)

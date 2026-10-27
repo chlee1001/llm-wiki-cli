@@ -1,13 +1,16 @@
 """Markdown templates owned by llm-wiki."""
 from __future__ import annotations
 
-AGENTS_BLOCK = """<!-- llm-wiki:begin -->
+
+def agents_block(wiki_dir: str) -> str:
+    return f"""<!-- llm-wiki:begin -->
 ## LLM wiki
 
-Read `llm-wiki/index.md` first. Use `llm-wiki search` scoped to the current project before work, then run `llm-wiki wrap` at session end. Put uncertain facts in `inbox/candidates/` with `llm-wiki promote`.
+Read `{wiki_dir}/index.md` first. Use `llm-wiki search` scoped to the current project before work, then run `llm-wiki wrap` at session end. Put uncertain facts in `inbox/candidates/` with `llm-wiki promote`.
 
 The wiki ranks below source code, tests, and AGENTS.md. Do not record secrets.
 <!-- llm-wiki:end -->"""
+
 
 GJC_FRONT_MATTER = """---
 alwaysApply: false
@@ -15,8 +18,10 @@ description: Before work in this repo or umbrella, use llm-wiki search; at sessi
 ---
 """
 
-GJC_RULE = """<!-- llm-wiki:begin -->
-Read `llm-wiki/index.md`, then search the current project with `llm-wiki search`. Run `llm-wiki wrap` at session end. Send uncertain facts to candidates with `llm-wiki promote`. Source code, tests, and AGENTS.md outrank this wiki. Never record secrets.
+
+def gjc_rule(wiki_dir: str) -> str:
+    return f"""<!-- llm-wiki:begin -->
+Read `{wiki_dir}/index.md`, then search the current project with `llm-wiki search`. Run `llm-wiki wrap` at session end. Send uncertain facts to candidates with `llm-wiki promote`. Source code, tests, and AGENTS.md outrank this wiki. Never record secrets.
 <!-- llm-wiki:end -->
 """
 

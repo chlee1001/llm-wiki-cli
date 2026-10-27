@@ -24,18 +24,14 @@ def search_scope(wiki: Wiki, cwd: Path, project: str | None, all_projects: bool)
 
 
 def text_search(query: str, directories: list[Path], root: Path, limit: int) -> list[dict[str, Any]]:
-    terms = [term.casefold() for term in query.split() if term]
+    terms = [term.casefold() for term in query.split()]
     if not terms:
         raise WikiError("Search query must not be empty.")
     results: list[dict[str, Any]] = []
-    seen: set[Path] = set()
     for directory in directories:
         if not directory.exists():
             continue
         for path in directory.rglob("*.md"):
-            if path in seen:
-                continue
-            seen.add(path)
             try:
                 content = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:

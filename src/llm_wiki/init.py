@@ -1,11 +1,12 @@
 """Creation and maintenance of the on-disk wiki layout."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
-from .config import Wiki, WikiError, add_project, discover, is_legacy_dir, is_wiki_dir_name, validate_project_name, write_config
-from .templates import AGENTS_BLOCK, GJC_FRONT_MATTER, GJC_RULE, index, wiki_readme
+from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, validate_project_name, wiki_dirs, write_config
+from .templates import GJC_FRONT_MATTER, agents_block, gjc_rule, index, wiki_readme
 
 
 def _write_missing(path: Path, content: str, created: list[str], existing: list[str]) -> None:
@@ -70,28 +71,31 @@ def ensure_project_layout(wiki: Wiki, name: str, created: list[str] | None = Non
 
 def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bool, include_gjc: bool) -> dict[str, object]:
     root = root.resolve()
-    directory = root / "llm-wiki"
+    found = wiki_dirs(root)
+    directory = found[0] if found else root / "llm-wiki"
     created: list[str] = []
     existing: list[str] = []
     skipped: list[dict[str, str]] = []
     if mode is not None and mode not in {"single", "umbrella"}:
         raise WikiError("Mode must be single or umbrella.")
-    if any(is_legacy_dir(candidate) for candidate in (root, *root.parents)) or is_legacy_dir(directory):
+    if any(is_legacy_dir(candidate) for candidate in (root, *root.parents)) or any(is_legacy_dir(child) for child in found):
         raise WikiError("Cannot initialize over a legacy wiki. Add wiki.toml manually or choose another root.")
-    inside_wiki = next((candidate for candidate in (root, *root.parents) if is_wiki_dir_name(candidate) and (candidate / "wiki.toml").is_file()), None)
+    inside_wiki = next((candidate for candidate in (root, *root.parents) if is_wiki_dir_name(candidate) and has_config(candidate)), None)
     if inside_wiki:
         raise WikiError(f"Cannot initialize inside an existing wiki directory: {inside_wiki}.")
-    if (directory / "wiki.toml").exists():
+    configured = has_config(directory)
+    if not configured and os.path.exists(directory / ".git"):
+        raise WikiError(f"Cannot initialize over a git repository: {directory}.")
+    if configured:
         wiki = discover(root)
         existing.append(str(directory / "wiki.toml"))
     else:
-        project_name = name or root.name
-        validate_project_name(project_name)
+        wiki_name = name or root.name
         projects: dict[str, str]
         if mode == "umbrella":
             projects = {}
             for child in sorted(root.iterdir() if root.exists() else [], key=lambda item: item.name):
-                if not child.is_dir() or not (child / ".git").exists():
+                if is_wiki_dir_name(child) or not os.path.isdir(child) or not os.path.exists(child / ".git"):
                     continue
                 try:
                     validate_project_name(child.name)
@@ -102,9 +106,9 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
                     continue
                 projects[child.name] = child.name
         else:
-            projects = {project_name: "."}
-        wiki = Wiki(root, directory, mode or "single", name or root.name, projects)
-        directory.mkdir(parents=True, exist_ok=True)
+            validate_project_name(wiki_name)
+            projects = {wiki_name: "."}
+        wiki = Wiki(root, directory, mode or "single", wiki_name, projects)
         write_config(wiki)
         created.append(str(directory / "wiki.toml"))
     for path in (directory / "shared" / "knowledge", directory / "shared" / "inbox" / "candidates"):
@@ -117,9 +121,9 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
     _write_missing(directory / "index.md", index(wiki.projects), created, existing)
     _write_missing(directory / "log.md", "# LLM Wiki Log\n", created, existing)
     if include_agents:
-        _replace_marked(root / "AGENTS.md", AGENTS_BLOCK, created, existing, append_if_missing=True)
+        _replace_marked(root / "AGENTS.md", agents_block(directory.name), created, existing, append_if_missing=True)
     if include_gjc:
-        _replace_marked(root / ".gjc" / "rules" / "llm-wiki.md", GJC_RULE, created, existing, prefix=GJC_FRONT_MATTER)
+        _replace_marked(root / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(directory.name), created, existing, prefix=GJC_FRONT_MATTER)
     result: dict[str, object] = {"root": str(root), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing}
     if wiki.mode == "umbrella":
         result["skipped"] = skipped
