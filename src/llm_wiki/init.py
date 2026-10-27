@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, validate_project_name, wiki_dirs, write_config
-from .templates import GJC_FRONT_MATTER, agents_block, gjc_rule, index, wiki_readme
+from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, wiki_readme
 
 
 def _write_missing(path: Path, content: str, created: list[str], existing: list[str]) -> None:
@@ -124,6 +124,7 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
         _replace_marked(root / "AGENTS.md", agents_block(directory.name), created, existing, append_if_missing=True)
     if include_gjc:
         _replace_marked(root / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(directory.name), created, existing, prefix=GJC_FRONT_MATTER)
+        _replace_marked(root / ".gjc" / "skills" / SKILL_NAME / "SKILL.md", gjc_skill(directory.name), created, existing, prefix=SKILL_FRONT_MATTER)
     result: dict[str, object] = {"root": str(root), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing}
     if wiki.mode == "umbrella":
         result["skipped"] = skipped

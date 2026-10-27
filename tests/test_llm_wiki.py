@@ -19,7 +19,7 @@ from llm_wiki.qmd import collection_name, qmd_search, qmd_sync, run_command
 from llm_wiki.records import promote, wrap
 from llm_wiki.redact import redact
 from llm_wiki.search import search
-from llm_wiki.templates import agents_block, gjc_rule
+from llm_wiki.templates import agents_block, gjc_rule, gjc_skill
 
 
 @contextmanager
@@ -373,6 +373,16 @@ class LlmWikiTests(unittest.TestCase):
             self.assertIn("untrusted data", guide)
             self.assertIn("Candidates require review", guide)
             self.assertIn("Never record secrets", guide)
+            self.assertIn('"세션 마무리", "세션 종료"', guide)
+
+    def test_generated_wrap_skill_uses_supported_wrap_fields(self) -> None:
+        skill = gjc_skill("LLM-Wiki")
+        self.assertIn("`LLM-Wiki/`", skill)
+        self.assertIn('"세션 마무리", "세션 종료"', skill)
+        payload = skill.split("<<'JSON'\n", 1)[1].split("\nJSON", 1)[0]
+        fields = set(json.loads(payload))
+        self.assertLessEqual(fields, {"topic", "task", "completed", "verification", "handoff", "not_tested", "agent", "project", "candidate"})
+        self.assertLessEqual({"topic", "task", "completed"}, fields)
 
     def test_redaction_covers_sample_secrets(self) -> None:
         text, count = redact("password=hunter2 Bearer abcdefghijklmnop AKIA1234567890ABCDEF eyJaaa.bbb.ccc https://u:p@example.com")
@@ -582,10 +592,15 @@ class LlmWikiTests(unittest.TestCase):
         first = init_wiki(self.root, "single", "demo", True, True)
         agents = self.root / "AGENTS.md"
         rule = self.root / ".gjc" / "rules" / "llm-wiki.md"
-        initial_agents, initial_rule = agents.read_bytes(), rule.read_bytes()
+        skill = self.root / ".gjc" / "skills" / "llm-wiki-wrap" / "SKILL.md"
+        initial_agents, initial_rule, initial_skill = agents.read_bytes(), rule.read_bytes(), skill.read_bytes()
+        self.assertTrue(skill.read_text(encoding="utf-8").startswith("---\nname: llm-wiki-wrap\n"))
+        self.assertIn(str(skill.resolve()), first["created"])
         result = init_wiki(self.root, "single", "demo", True, True)
         self.assertEqual(agents.read_bytes(), initial_agents)
         self.assertEqual(rule.read_bytes(), initial_rule)
+        self.assertEqual(skill.read_bytes(), initial_skill)
+        self.assertIn(str(skill.resolve()), result["existing"])
         self.assertNotIn(str(agents.resolve()), result["created"])
         self.assertNotIn(str(rule.resolve()), result["created"])
         self.assertIn(str(agents.resolve()), result["existing"])

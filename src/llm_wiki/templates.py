@@ -13,7 +13,7 @@ llm-wiki status --json
 llm-wiki search "authentication" --json
 ```
 
-Before ending a session, record it without shell-quoting multiline text:
+Before ending a session, or when the user says "세션 마무리", "세션 종료", or "wrap up the session", record it without shell-quoting multiline text:
 
 ```sh
 llm-wiki wrap --input-json - --json <<'JSON'
@@ -49,7 +49,7 @@ llm-wiki status --json
 llm-wiki search "authentication" --json
 ```
 
-At session end, use JSON stdin for multiline fields:
+At session end, or when the user says "세션 마무리", "세션 종료", or "wrap up the session", follow the `llm-wiki-wrap` skill. Use JSON stdin for multiline fields:
 
 ```sh
 llm-wiki wrap --input-json - --json <<'JSON'
@@ -66,6 +66,45 @@ JSON
 ```
 
 Never record secrets.
+<!-- llm-wiki:end -->
+"""
+
+
+SKILL_NAME = "llm-wiki-wrap"
+
+SKILL_FRONT_MATTER = f"""---
+name: {SKILL_NAME}
+description: "Record the current session in llm-wiki. Use when the user says 세션 마무리, 세션 종료, 세션 정리, session wrap, wrap up the session, or end the session."
+---
+"""
+
+
+def gjc_skill(wiki_dir: str) -> str:
+    return f"""<!-- llm-wiki:begin -->
+# llm-wiki-wrap
+
+Record the session outcome in `{wiki_dir}/` with `llm-wiki wrap`. Run this when the user says "세션 마무리", "세션 종료", "세션 정리", or asks to wrap up or end the session. Finish any requested cleanup too; the wiki record does not replace it.
+
+## Steps
+
+1. Collect evidence from this session: the task, changed paths (`git status --short`, `git diff --stat`), commands and tests that actually ran, decisions, unfinished work, and blockers. Do not invent results.
+2. Pick the project. Run from the project directory, or check `llm-wiki status --json` and pass `"project"` in the input.
+3. Write the record with one command. Use JSON stdin so multiline text needs no shell quoting:
+
+```sh
+llm-wiki wrap --input-json - --json <<'JSON'
+{{"topic":"short-topic","agent":"gjc","task":"task or ticket","completed":"what was done","verification":"commands and results","not_tested":"what was not verified","handoff":"next steps for the next session","candidate":["uncertain fact to review later"]}}
+JSON
+```
+
+4. Read the JSON response. Report the returned `path` (the session record) and any `candidates` paths exactly; do not guess file names.
+
+## Rules
+
+- Never record secrets, tokens, passwords, or personal data. Summarize instead of pasting raw logs.
+- Put uncertain facts in `candidate`. Do not promote them to knowledge without review.
+- Omit fields that have no content rather than writing placeholders.
+- If `llm-wiki` is missing or the command fails, report the error and stop. Do not write wiki files by hand.
 <!-- llm-wiki:end -->
 """
 

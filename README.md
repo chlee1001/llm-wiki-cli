@@ -88,7 +88,7 @@ llm-wiki qmd-sync --embed
 
 ## 에이전트 연결
 
-`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만들며, 작업 시작 전 검색하고 종료 때 `wrap`을 실행하라는 규칙을 담는다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다.
+`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만들며, 작업 시작 전 검색하고 종료 때 `wrap`을 실행하라는 규칙을 담는다. `.gjc/skills/llm-wiki-wrap/SKILL.md`도 만든다. 사용자가 "세션 마무리"나 "세션 종료"라고 하면 에이전트가 이 스킬을 따라 `llm-wiki wrap`으로 세션 기록을 남긴다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다. `--no-gjc`는 규칙과 스킬을 모두 건너뛴다.
 
 에이전트는 `index.md`를 먼저 읽고 현재 프로젝트 범위에서 검색한다. 확신이 낮은 내용은 `promote`로 후보에 둔다. `promote`는 `knowledge/`에 쓰지 않으며 `reviewed`나 `stable` 상태로 바꾸지 않는다.
 
