@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, load_wiki_at, validate_project_name, wiki_dirs, write_config
+from .config import Wiki, WikiError, add_project, discover, discover_for, has_config, is_legacy_dir, is_wiki_dir_name, load_wiki_at, validate_project_name, wiki_dirs, write_config
 from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, legacy_wiki_readme, wiki_readme
 
 BEGIN = "<!-- llm-wiki:begin -->"
@@ -70,15 +70,21 @@ class Managed(NamedTuple):
         return self.prefix + self.block + "\n"
 
 
-def managed_files(wiki: Wiki) -> list[Managed]:
-    """Files whose llm-wiki marker block init keeps in sync with this CLI's templates."""
-    d = wiki.directory.name
-    return [
-        Managed("agents", wiki.root / "AGENTS.md", agents_block(d).rstrip("\n"), append=True),
-        Managed("gjc", wiki.root / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(d).rstrip("\n"), GJC_FRONT_MATTER),
-        Managed("gjc", wiki.root / ".gjc" / "skills" / SKILL_NAME / "SKILL.md", gjc_skill(d).rstrip("\n"), SKILL_FRONT_MATTER),
-        Managed("wiki", wiki.directory / "README.md", wiki_readme(wiki.name).rstrip("\n"), legacy=legacy_wiki_readme(wiki.name)),
+def managed_files(wiki: Wiki, workspace: Path | None = None) -> list[Managed]:
+    """Files whose llm-wiki marker block init keeps in sync with this CLI's templates.
+
+    A workspace mapped in roots.json gets only its agent guidance, pointing at the mapped wiki; the central
+    clone itself carries no managed files.
+    """
+    base, d = (wiki.root, wiki.directory.name) if workspace is None else (workspace, None)
+    files = [
+        Managed("agents", base / "AGENTS.md", agents_block(d).rstrip("\n"), append=True),
+        Managed("gjc", base / ".gjc" / "rules" / "llm-wiki.md", gjc_rule(d).rstrip("\n"), GJC_FRONT_MATTER),
+        Managed("gjc", base / ".gjc" / "skills" / SKILL_NAME / "SKILL.md", gjc_skill(d).rstrip("\n"), SKILL_FRONT_MATTER),
     ]
+    if workspace is None:
+        files.append(Managed("wiki", wiki.directory / "README.md", wiki_readme(wiki.name).rstrip("\n"), legacy=legacy_wiki_readme(wiki.name)))
+    return files
 
 
 def _inspect(spec: Managed) -> tuple[str, str | None, tuple[int, int] | None]:
@@ -103,31 +109,32 @@ def _inspect(spec: Managed) -> tuple[str, str | None, tuple[int, int] | None]:
     return ("current" if content[span[0] : span[1]] == spec.block else "stale"), content, span
 
 
-def managed_status(wiki: Wiki) -> list[dict[str, str]]:
+def managed_status(wiki: Wiki, workspace: Path | None = None) -> list[dict[str, str]]:
     if wiki.legacy:
         return []
+    base = wiki.root if workspace is None else workspace
     entries = []
-    for spec in managed_files(wiki):
+    for spec in managed_files(wiki, workspace):
         state, content, span = _inspect(spec)
-        entry = {"path": spec.path.relative_to(wiki.root).as_posix(), "state": state}
+        entry = {"path": spec.path.relative_to(base).as_posix(), "state": state}
         if spec.prefix and content is not None and span is not None:
             entry["front_matter"] = "current" if content[: span[0]] == spec.prefix else "differs"
         entries.append(entry)
     return entries
 
 
-def refresh_command(wiki: Wiki, entries: list[dict[str, str]]) -> str | None:
+def refresh_command(wiki: Wiki, entries: list[dict[str, str]], workspace: Path | None = None) -> str | None:
     states = [entry["state"] for entry in entries]
     if not any(state in {"stale", "legacy"} for state in states) or any(state in {"invalid", "unreadable"} for state in states):
         return None
     absent = {"missing", "unmarked"}
-    groups = [spec.group for spec in managed_files(wiki)]
+    groups = [spec.group for spec in managed_files(wiki, workspace)]
     flags = []
     if all(state in absent for group, state in zip(groups, states) if group == "agents"):
         flags.append("--no-agents")
     if all(state in absent for group, state in zip(groups, states) if group == "gjc"):
         flags.append("--no-gjc")
-    return shlex.join(["llm-wiki", "init", "--path", str(wiki.root), *flags])
+    return shlex.join(["llm-wiki", "init", "--path", str(wiki.root if workspace is None else workspace), *flags])
 
 
 _FIXES = {
@@ -149,6 +156,42 @@ def ensure_project_layout(wiki: Wiki, name: str, created: list[str] | None = Non
             path.mkdir(parents=True)
             if created is not None:
                 created.append(str(path))
+
+
+def _inspect_writable(specs: list[Managed], groups: set[str], base: Path) -> list[tuple[Managed, str, str | None, tuple[int, int] | None]]:
+    inspected = [(spec, *_inspect(spec)) for spec in specs if spec.group in groups]
+    blocked = [f"{spec.path.relative_to(base).as_posix()} ({state}); {_FIXES[spec.group]}" for spec, state, _, _ in inspected if state in {"invalid", "unreadable"}]
+    if blocked:
+        raise WikiError("Cannot update " + "; ".join(blocked) + ".")
+    return inspected
+
+
+def _write_managed(inspected: list[tuple[Managed, str, str | None, tuple[int, int] | None]], created: list[str], existing: list[str], updated: list[str]) -> None:
+    for spec, state, content, span in inspected:
+        if state == "missing":
+            spec.path.parent.mkdir(parents=True, exist_ok=True)
+            spec.path.write_bytes(spec.create.encode("utf-8"))
+            created.append(str(spec.path))
+            continue
+        existing.append(str(spec.path))
+        if state == "legacy":
+            spec.path.write_bytes(spec.create.encode("utf-8"))
+            updated.append(str(spec.path))
+        elif state == "stale" or (state == "unmarked" and spec.append):
+            spec.path.write_bytes(_splice(content, span, spec.block).encode("utf-8"))
+            updated.append(str(spec.path))
+
+
+def init_workspace(workspace: Path, include_agents: bool, include_gjc: bool) -> dict[str, object]:
+    """Write the agent guidance of a workspace that roots.json maps to a central wiki; no local wiki is made."""
+    wiki, project = discover_for(workspace, None)
+    groups = ({"agents"} if include_agents else set()) | ({"gjc"} if include_gjc else set())
+    inspected = _inspect_writable(managed_files(wiki, workspace), groups, workspace)
+    created: list[str] = []
+    existing: list[str] = []
+    updated: list[str] = []
+    _write_managed(inspected, created, existing, updated)
+    return {"root": str(workspace), "wiki": str(wiki.directory), "project": project, "created": created, "existing": existing, "updated": updated}
 
 
 def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bool, include_gjc: bool) -> dict[str, object]:
@@ -193,10 +236,7 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
             projects = {wiki_name: "."}
         wiki = Wiki(root, directory, mode or "single", wiki_name, projects)
     groups = {"wiki"} | ({"agents"} if include_agents else set()) | ({"gjc"} if include_gjc else set())
-    inspected = [(spec, *_inspect(spec)) for spec in managed_files(wiki) if spec.group in groups]
-    blocked = [f"{spec.path.relative_to(wiki.root).as_posix()} ({state}); {_FIXES[spec.group]}" for spec, state, _, _ in inspected if state in {"invalid", "unreadable"}]
-    if blocked:
-        raise WikiError("Cannot update " + "; ".join(blocked) + ".")
+    inspected = _inspect_writable(managed_files(wiki), groups, wiki.root)
     if not configured:
         write_config(wiki)
         created.append(str(directory / "wiki.toml"))
@@ -207,19 +247,7 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
     for project in wiki.projects:
         ensure_project_layout(wiki, project, created)
     updated: list[str] = []
-    for spec, state, content, span in inspected:
-        if state == "missing":
-            spec.path.parent.mkdir(parents=True, exist_ok=True)
-            spec.path.write_bytes(spec.create.encode("utf-8"))
-            created.append(str(spec.path))
-            continue
-        existing.append(str(spec.path))
-        if state == "legacy":
-            spec.path.write_bytes(spec.create.encode("utf-8"))
-            updated.append(str(spec.path))
-        elif state == "stale" or (state == "unmarked" and spec.append):
-            spec.path.write_bytes(_splice(content, span, spec.block).encode("utf-8"))
-            updated.append(str(spec.path))
+    _write_managed(inspected, created, existing, updated)
     _write_missing(directory / "index.md", index(wiki.projects), created, existing)
     _write_missing(directory / "log.md", "# LLM Wiki Log\n", created, existing)
     _ensure_line(directory / ".gitattributes", GITATTRIBUTES_LINE, created, existing, updated)

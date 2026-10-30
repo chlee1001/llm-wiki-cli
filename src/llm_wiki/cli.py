@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .brief import DEFAULT_LIMIT, brief
-from .config import WikiError, current_project, discover_for, has_config, require_writable, set_category, sync_directory
+from .config import WikiError, current_project, discover_for, has_config, mapped_workspace, require_writable, set_category, sync_directory
 from .curate import decide, pending, review
 from .handoff import take
-from .init import init_central, init_wiki, managed_status, refresh_command, register_project
+from .init import init_central, init_wiki, init_workspace, managed_status, refresh_command, register_project
 from .qmd import qmd_sync
 from .records import promote, wrap
 from .search import search
@@ -234,8 +234,14 @@ def _status(wiki, cwd: Path, mapped_project: str | None = None) -> dict[str, Any
     for name in sorted(wiki.projects):
         base = wiki.directory / "projects" / name
         projects.append({"name": name, "path": wiki.projects[name], "knowledge": _count(base / "knowledge"), "sessions": _count(base / "sessions"), "candidates": _count(base / "inbox" / "candidates"), "category": wiki.category(name)})
-    managed = managed_status(wiki)
-    return {"root": str(wiki.root), "mode": wiki.mode, "current_project": current_project(wiki, cwd, mapped_project), "projects": projects, "qmd_available": shutil.which("qmd") is not None, "managed": managed, "refresh": refresh_command(wiki, managed)}
+    # A roots.json mapping puts the agent guidance in the mapped workspace and the wiki in its clone.
+    mapping = mapped_workspace(cwd) if mapped_project is not None else None
+    workspace = mapping[0] if mapping is not None else None
+    managed = managed_status(wiki, workspace)
+    result = {"root": str(wiki.root if workspace is None else wiki.directory), "mode": wiki.mode, "current_project": current_project(wiki, cwd, mapped_project), "projects": projects, "qmd_available": shutil.which("qmd") is not None, "managed": managed, "refresh": refresh_command(wiki, managed, workspace)}
+    if workspace is not None:
+        result["workspace"] = str(workspace)
+    return result
 
 
 def execute(args: argparse.Namespace) -> tuple[int, Any]:
@@ -244,7 +250,13 @@ def execute(args: argparse.Namespace) -> tuple[int, Any]:
         if args.central:
             result = init_central(Path(args.path), args.name)
             return 0, result
-        result = init_wiki(Path(args.path), args.mode, args.name, not args.no_agents, not args.no_gjc)
+        path = Path(args.path).expanduser().resolve()
+        mapping = mapped_workspace(path)
+        if mapping is not None and mapping[0] == path:
+            if args.mode is not None or args.name is not None:
+                raise WikiError(f"{path} is mapped in roots.json to {mapping[1]}; --mode and --name do not apply.")
+            return 0, init_workspace(path, not args.no_agents, not args.no_gjc)
+        result = init_wiki(path, args.mode, args.name, not args.no_agents, not args.no_gjc)
         return 0, result
     if args.command == "sync":
         target = sync_directory(cwd, Path(args.root) if args.root else None)

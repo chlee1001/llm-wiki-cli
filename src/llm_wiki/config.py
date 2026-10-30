@@ -180,19 +180,24 @@ def read_roots() -> dict[Path, tuple[Path, str]]:
     return result
 
 
-def _mapped(cwd: Path) -> tuple[Path, str] | None:
+def mapped_workspace(cwd: Path) -> tuple[Path, Path, str] | None:
+    """The roots.json entry covering cwd as (workspace directory, wiki clone, project); the longest prefix wins."""
     here = Path(os.path.normpath(cwd.expanduser().resolve()))
-    best: tuple[int, tuple[Path, str]] | None = None
-    for project_dir, target in read_roots().items():
+    best: tuple[Path, Path, str] | None = None
+    for project_dir, (clone, project) in read_roots().items():
         try:
             resolved = Path(os.path.normpath(project_dir.resolve()))
             here.relative_to(resolved)
         except ValueError:
             continue
-        depth = len(resolved.parts)
-        if best is None or depth > best[0]:
-            best = (depth, target)
-    return best[1] if best else None
+        if best is None or len(resolved.parts) > len(best[0].parts):
+            best = (resolved, clone, project)
+    return best
+
+
+def _mapped(cwd: Path) -> tuple[Path, str] | None:
+    found = mapped_workspace(cwd)
+    return (found[1], found[2]) if found else None
 
 
 def sync_directory(cwd: Path, root: Path | None) -> Path | None:
