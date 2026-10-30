@@ -122,7 +122,7 @@ def discover(start: Path | None = None) -> Wiki:
                 return _load(directory)
             if is_legacy_dir(directory):
                 return _load(directory, legacy=True)
-    raise WikiError("No llm-wiki found. Run 'llm-wiki init' first.")
+    raise WikiError("No llm-wiki found. Connect this directory to a central wiki with 'llm-wiki init --path DIR --wiki CLONE --project NAME', or create a local wiki with 'llm-wiki init'.")
 
 
 ROOTS_ENTRY_KEYS = {"wiki", "project"}

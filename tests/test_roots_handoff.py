@@ -89,7 +89,7 @@ class RootsTests(Base):
         sibling = self.base / "work" / "apix"
         sibling.mkdir(parents=True)
         self.write_roots({str(self.workspace): {"wiki": str(self.clone), "project": "api"}})
-        with self.assertRaisesRegex(WikiError, "No llm-wiki found"):
+        with self.assertRaisesRegex(WikiError, r"No llm-wiki found\..*init --path DIR --wiki CLONE --project NAME"):
             discover_for(sibling, None)
 
     def test_root_flag_and_env_outrank_roots_json(self) -> None:
