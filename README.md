@@ -1,6 +1,6 @@
 # llm-wiki
 
-`llm-wiki`는 저장소 옆에 Markdown 기반 작업 기억을 둔다. 세션 기록과 검토 전 후보를 분리하고, 코드에 없는 맥락만 짧게 남긴다.
+`llm-wiki`는 저장소 옆에 Markdown 기반 작업 기억을 둔다. 세션 기록과 검토 전 후보를 분리하고, 코드에 없는 맥락만 짧게 남긴다. 위키를 git 중앙 저장소의 clone으로 두면 여러 머신이 `sync`로 같은 기록을 나눠 쓴다.
 
 위키는 증거가 아니다. 지시문, `AGENTS.md`, 현재 소스 코드·테스트·검증 결과가 위키보다 앞선다. 비밀값, 토큰, 쿠키, 비밀번호는 기록하지 않는다.
 
@@ -41,15 +41,22 @@ llm-wiki promote --title "확인 필요" --body "근거를 더 확인한다"
 
 | 명령 | 설명 |
 | --- | --- |
-| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. 결과의 `created`는 새로 만든 파일, `updated`는 이미 있던 관리 파일 중 마커 블록 갱신으로 바이트가 바뀐 파일이다. |
-| `add-project NAME` | 프로젝트와 프로젝트 전용 디렉터리를 등록한다. `--path PATH`로 프로젝트 경로를 정한다. |
-| `status` | 현재 위키, 프로젝트, Markdown 수, QMD 설치 여부와 관리 파일 상태(`managed`), 갱신 명령(`refresh`)을 보여 준다. |
-| `search QUERY` | 현재 프로젝트와 공유 문서를 검색한다. `--project NAME` 또는 `-n N`으로 범위와 개수를 정하고, `--all-projects`는 전체를 검색한다. `--engine auto\|qmd\|text`로 검색 엔진을 고른다. 결과마다 문서 머리말의 `type`, `status`, `created`를 함께 보여 주고, 값이 없으면 `null`이다. |
+| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. `--central`은 중앙 저장소 clone 자체를 위키로 만든다([중앙 저장소와 여러 머신](#중앙-저장소와-여러-머신)). `--mode`, `--no-agents`, `--no-gjc`와 함께 쓰면 거부한다. 결과의 `created`는 새로 만든 파일, `updated`는 이미 있던 관리 파일 중 마커 블록 갱신으로 바이트가 바뀐 파일이다. |
+| `add-project NAME` | 프로젝트와 프로젝트 전용 디렉터리를 등록한다. `--path PATH`로 프로젝트 경로를, `--category TEXT`로 분류를 정한다. |
+| `category PROJECT [VALUE]` | 프로젝트 분류를 보여 주거나 `VALUE`로 바꾼다. 빈 문자열이면 분류가 없다. |
+| `status` | 현재 위키, 프로젝트별 Markdown 수와 분류(`category`), QMD 설치 여부와 관리 파일 상태(`managed`), 갱신 명령(`refresh`)을 보여 준다. |
+| `brief` | 작업 시작용 요약을 출력한다. 열린 인수인계, 검토 대기 후보, 최근 세션을 기본 16384바이트 안에 담는다. `--project`, `--max-bytes N`, `--json`을 쓸 수 있다. 한도는 출력 본문(`text`)에 적용되고, `--json` 결과는 같은 내용을 항목별로도 담아 더 길다. 읽지 못한 기록과 중복 take 경고는 종류마다 5개까지만 본문에 싣고, 전체 목록은 `--json`의 `unreadable`과 `duplicate_takes`에 있다. |
+| `search QUERY` | 현재 프로젝트와 공유 문서를 검색한다. `--project NAME` 또는 `-n N`으로 범위와 개수를 정하고, `--all-projects`는 전체를, `--category TEXT`는 그 분류의 프로젝트만 검색한다(공유 문서 제외). `--engine auto\|qmd\|text`로 검색 엔진을 고른다. 결과마다 문서 머리말의 `type`, `status`, `created`를 함께 보여 주고, 값이 없으면 `null`이다. |
 | `qmd-sync` | QMD collection과 context를 만들고 갱신한다. `--embed`를 붙이면 임베딩까지 만든다. |
-| `wrap` | 작업 종료 기록을 세션 문서와 로그에 남긴다. 토큰, 비밀번호, 쿠키 값은 `[REDACTED_...]`로 가린다. `--topic`, `--task`, `--completed`는 필수이고 `--verification`, `--handoff`, `--not-tested`, `--agent`, `--project`, `--candidate`를 쓸 수 있다. |
+| `wrap` | 작업 종료 기록을 세션 문서와 로그에 남긴다. `--handoff`가 있으면 같은 이름의 인수인계 파일을 `handoffs/`에 따로 만들고 세션 문서와 서로 링크한다. 토큰, 비밀번호, 쿠키 값은 `[REDACTED_...]`로 가린다. `--topic`, `--task`, `--completed`는 필수이고 `--verification`, `--handoff`, `--not-tested`, `--agent`, `--project`, `--candidate`를 쓸 수 있다. |
 | `promote` | 검토 전 후보를 `inbox/candidates/`에 남긴다. `wrap`과 같은 규칙으로 비밀값을 가린다. `--title`, `--body`는 필수이고 `--source`, `--project`, `--shared`를 쓸 수 있다. `--source`가 있으면 상태가 `candidate-with-evidence`, 없으면 `needs-review`이고 출처 칸에 `None recorded.`를 쓴다. |
+| `take HANDOFF_ID` | 인수인계를 가져갔다고 표시한다. `--agent NAME`(기본 `gjc`), `--project`를 쓸 수 있다. 프로젝트를 정하지 못하면 `wrap`과 같이 공유 영역의 인수인계를 찾는다. |
+| `review [PATH]` | 경로를 주면 후보 하나의 검토 재료(머리말, 본문, 출처, 세션 링크)를, 없으면 검토 대기 후보 목록을 출력한다. 파일은 바꾸지 않는다. |
+| `accept PATH` | 후보를 `accepted`로 결정한다. `--decided-by owner`와 `--reason`이 필요하다. |
+| `reject PATH` | 후보를 지우지 않고 `rejected`로 결정한다. `--decided-by NAME`과 `--reason`이 필요하다. |
+| `sync` | 위키 변경을 커밋하고 중앙 저장소와 맞춘다. `--pull-only`는 받아오기만 한다. |
 
-모든 명령에 `--json`을 붙일 수 있다. `init`을 제외한 명령에서 `--root DIR`는 위키 탐색 시작 위치를 바꾸며, `LLM_WIKI_ROOT` 환경 변수도 쓸 수 있다.
+모든 명령에 `--json`을 붙일 수 있다. `init`을 제외한 명령에서 `--root DIR`는 위키 탐색 시작 위치를 바꾸며, `LLM_WIKI_ROOT` 환경 변수도 쓸 수 있다. 둘 다 없으면 `roots.json` 매핑, 그다음 현재 디렉터리에서 위로 찾기 순서다.
 
 ### 에이전트용 JSON 입력
 
@@ -73,7 +80,90 @@ JSON
 
 `wrap`과 `promote`에서 현재 디렉터리로 프로젝트를 찾지 못하면 공유 영역 `shared/`에 쓴다. `promote --shared`도 공유 영역을 명시한다. 세션 폴더(`sessions/YYYY/MM`), 파일 이름의 시각, `created`, `log.md`는 모두 로컬 시간을 쓰며 `created`에는 시간대 오프셋이 붙는다.
 
-비밀값 가리기는 정규식 기반 휴리스틱이다. `password=값`, `"token": "값"`처럼 키 뒤에 오는 값은 한 줄 안에서 가리고, 따옴표 안의 백슬래시는 이스케이프로 본다. 그래서 `'abc\'`처럼 백슬래시로 끝나는 값은 줄 끝까지 가린다. 닫히지 않은 따옴표도 줄 끝까지 가리므로 `"PASSWORD='x'" -e "USER=bob"`처럼 따옴표가 겹치면 뒤쪽 내용까지 가려질 수 있다. 구분자는 `=`, `:`, `:=`, `=>`를 인식하고, `SECRET_KEY`나 `client_secret`처럼 키 이름에 앞뒤 글자가 붙어도 비밀 키로 본다. 이 때문에 `password_hint`, `secretary` 같은 키의 값도 가려진다. `<password>값</password>` 같은 태그, 줄 중간의 `Authorization: Basic`과 `Cookie:` 헤더도 가린다. `Cookie` 헤더는 `curl -H "Cookie: ..."`처럼 따옴표 인자 안에 있으면 닫는 따옴표까지 가린다. 다만 닫는 따옴표 바로 뒤가 공백, 구분 기호(`,;:)]}`), 줄 끝 중 하나가 아니면(`"Cookie: a=b"tail`처럼 글자가 붙으면) 줄 끝까지 가린다. `"Cookie": "..."` 같은 JSON 키를 포함한 나머지 경우에도 줄 끝까지 가린다. `mysid=`, `xsessionid=`, `x-session-id=`처럼 이름에 `session`이 들어가거나 `sid`로 끝나는 키의 값은 토큰으로 가린다. 그래서 `ssid=`, `possession=` 값도 가려진다. 값에 섞인 짝 없는 따옴표는 줄 끝까지 가린다. 다만 따옴표 뒤에 남은 줄이 256자보다 짧고 따옴표 바로 뒤에 공백이나 구분 기호가 오면, `password=x",y next`의 `x",y`처럼 그다음 공백까지만 가린다. 이때도 `password=x",y'z next`처럼 그 공백 전에 따옴표가 하나 더 나오면 줄 끝까지 가린다. 그 밖에 `redis://:pw@host`처럼 사용자 이름이 빈 URL 인증 정보도 가린다. YAML 블록(`password: |` 다음 줄)처럼 여러 줄에 걸친 값은 가리지 못하므로 기록 전에 직접 지운다.
+비밀값 가리기는 정규식 기반 휴리스틱이다. `password=값`, `"token": "값"`처럼 키 뒤에 오는 값은 한 줄 안에서 가리고, 따옴표 안의 백슬래시는 이스케이프로 본다. 그래서 `'abc\'`처럼 백슬래시로 끝나는 값은 줄 끝까지 가린다. 닫히지 않은 따옴표도 줄 끝까지 가리므로 `"PASSWORD='x'" -e "USER=bob"`처럼 따옴표가 겹치면 뒤쪽 내용까지 가려질 수 있다. 구분자는 `=`, `:`, `:=`, `=>`를 인식하고, `SECRET_KEY`나 `client_secret`처럼 키 이름에 앞뒤 글자가 붙어도 비밀 키로 본다. 이 때문에 `password_hint`, `secretary` 같은 키의 값도 가려진다. `<password>값</password>` 같은 태그, 줄 중간의 `Authorization: Basic`과 `Cookie:` 헤더도 가린다. `Cookie` 헤더는 `curl -H "Cookie: ..."`처럼 따옴표 인자 안에 있으면 닫는 따옴표까지 가린다. 다만 닫는 따옴표 바로 뒤가 공백, 구분 기호(`,;:)]}`), 줄 끝 중 하나가 아니면(`"Cookie: a=b"tail`처럼 글자가 붙으면) 줄 끝까지 가린다. `"Cookie": "..."` 같은 JSON 키를 포함한 나머지 경우에도 줄 끝까지 가린다. `mysid=값`, `xsessionid=값`, `x-session-id = 값`처럼 이름에 `session`이 들어가거나 `sid`로 끝나는 키의 값은 `=` 앞뒤에 공백이 있어도 토큰으로 가린다. 그래서 `ssid=`, `possession=` 값도 가려진다. `session = requests.Session()` 같은 코드 줄도 가려지므로, 이런 줄을 직접 적은 문서는 sync가 `secret_detected`로 멈춘다. 값에 섞인 짝 없는 따옴표는 줄 끝까지 가린다. 다만 따옴표 뒤에 남은 줄이 256자보다 짧고 따옴표 바로 뒤에 공백이나 구분 기호가 오면, `password=x",y next`의 `x",y`처럼 그다음 공백까지만 가린다. 이때도 `password=x",y'z next`처럼 그 공백 전에 따옴표가 하나 더 나오면 줄 끝까지 가린다. 그 밖에 `redis://:pw@host`처럼 사용자 이름이 빈 URL 인증 정보도 가린다. `-----BEGIN ... PRIVATE KEY-----` 블록만 여러 줄을 가리고, 키·값, 태그, 인증 헤더(`Bearer`, `Authorization: Basic`, `Cookie`) 가리기는 줄 단위다. 키 뒤 값이 다음 줄에서 시작하거나(`password:` 다음 줄, YAML 블록 `password: |`) 태그 값이 여러 줄이면 가리지 못하므로 기록 전에 직접 지운다. CRLF 줄 끝은 LF와 같게 보고, 줄 중간의 CR 하나는 공백으로 본다. `wrap --candidate` 문자열은 한 줄로 합친 제목과 원래 줄을 지킨 본문에 함께 들어가므로, 키와 값이 줄바꿈으로 갈라져 있으면 제목에서만 가려지고 본문에는 값이 남는다. `--agent`, `--decided-by`, `--reason`처럼 한 줄로 저장하는 값은 줄을 먼저 합치고 제어 문자를 공백으로 바꾼 뒤 가린다.
+
+## 중앙 저장소와 여러 머신
+
+owner의 GitHub private 저장소 하나(`my-llm-wiki`)를 위키로 쓴다. 회사 프로젝트와 개인 프로젝트는 같은 위키에 두고 `category`(`company`, `personal`)로 나눈다. 저장소 루트가 곧 위키 디렉터리이고 `wiki.toml`이 루트에 있다. 접근은 이 저장소에 등록한 deploy key로 한다. 저장소 생성과 키 등록은 owner가 직접 한다. 이 도구는 GitHub 설정을 바꾸지 않는다.
+
+첫 머신에서는 빈 저장소를 clone한 뒤 위키로 만들고 올린다.
+
+```sh
+git clone git@github-llm-wiki:OWNER/my-llm-wiki.git ~/wiki/my-llm-wiki
+llm-wiki init --central --path ~/wiki/my-llm-wiki --name my-llm-wiki
+llm-wiki add-project api --category company --root ~/wiki/my-llm-wiki
+llm-wiki sync --root ~/wiki/my-llm-wiki
+```
+
+`init --central`은 `.git`만 있는 빈 clone이나 이미 `wiki.toml`이 있는 clone에서만 동작한다. `wiki.toml`, `index.md`, `log.md`, `shared/`, `.gitattributes`(`log.md merge=union`), `.gitignore`(`.llm-wiki-tmp/`)만 만들고 `AGENTS.md`나 `.gjc` 파일은 만들지 않는다. 프로젝트 안의 `llm-wiki/` 디렉터리가 git 저장소일 때 거부하는 기존 규칙은 그대로다.
+
+다른 머신에서는 clone한 뒤 받아오기만 하면 된다. `wiki.toml`이 아직 없는 새 clone에서도 동작한다.
+
+```sh
+git clone git@github-llm-wiki:OWNER/my-llm-wiki.git ~/wiki/my-llm-wiki
+llm-wiki sync --pull-only --root ~/wiki/my-llm-wiki
+```
+
+작업 디렉터리와 위키를 잇는 매핑은 `$XDG_CONFIG_HOME/llm-wiki/roots.json`(없으면 `~/.config/llm-wiki/roots.json`)에 둔다. 머신마다 경로가 다르므로 이 파일은 저장소에 넣지 않는다.
+
+```json
+{"version": 1, "roots": {"/Users/me/work/api": {"wiki": "/Users/me/wiki/my-llm-wiki", "project": "api"}}}
+```
+
+경로는 절대 경로나 `~`로 시작해야 한다. 작업 디렉터리 아래 어디에서 실행해도 가장 긴 접두 경로가 고른 매핑을 쓴다. 등록하지 않은 `project`를 가리키면 `add-project`를 먼저 실행하라는 오류를 낸다.
+
+`sync`는 다음 순서로 동작한다.
+
+1. 작업 트리, 아직 push하지 않은 커밋, 스테이지한 인덱스를 차례로 비밀값 검사한다. 하나라도 걸리면 커밋과 push 없이 `secret_detected`로 멈춘다. 기준은 `wrap`·`promote`와 같은 가리기 규칙이 파일 내용을 바꾸는지다. 이미 `[REDACTED_...]`로 가린 값은 다시 걸리지 않지만, 자리표시자에 글자가 바로 붙어 있으면(`[REDACTED_SECRET]hunter2`) 비밀값으로 본다. 따옴표 값을 가린 자리 뒤에 구분 기호로 이어진 내용(`password="x",hunter2`의 `,hunter2`)은 가리기 규칙과 같이 남긴다. 이미 로컬 커밋에 들어간 값은 owner가 이력을 직접 정리해야 한다. 이 도구는 이력을 다시 쓰지 않고 검사를 건너뛰는 옵션도 없다.
+2. 위키 안 변경 전부를 커밋 하나로 묶는다. 메시지는 `llm-wiki sync: <host> <ISO 시각>`이다. 변경이 없으면 커밋을 건너뛴다. git identity가 없으면 `no_identity`로 멈춘다.
+3. `pull --rebase` 뒤 push한다. 충돌은 자동으로 풀지 않는다. `conflict` 오류에 충돌 파일 목록과 복구 방법(`recovery`)이 담긴다. 충돌을 풀고 `git rebase --continue`나 `git rebase --abort`를 마칠 때까지 `sync`와 기록 명령(`wrap`, `promote`, `take`, `accept`, `reject`)은 거부된다.
+
+오류는 `--json`에서 `{"error": "<메시지>", "code": "<코드>", ...}` 형태이고 종료 코드는 1이다. 코드에 따라 `conflicts`, `paths`, `recovery` 같은 필드가 더 붙는다. 네트워크가 없으면 `sync --pull-only`는 `status: offline`을 돌려준다. 위키가 중앙 저장소 clone이 아니면 `guard` 오류(`reason`이 `toplevel` 또는 `no_remote`)가 나므로 그런 위키에서는 `sync`를 쓰지 않는다. 충돌을 풀지 않은 채 다시 실행해도 `guard` 오류(`reason: rebase_in_progress`)가 난다. `reason`이 `missing_directory`(위키 경로가 없음)나 `no_git`(git 미설치)이면 설정이나 설치 문제이니 고친 뒤 다시 실행한다. git의 자격 증명 프롬프트와 편집기는 끄고, 모든 git 호출은 120초가 지나면 `git_timeout`으로 끊는다. ssh가 키 암호를 물으면 그 시간 동안 기다리므로 deploy key는 암호 없이 쓰거나 ssh-agent에 올려 둔다. 커밋은 `--no-verify`로 `pre-commit`·`commit-msg` 훅을 건너뛰고 `commit.gpgsign=false`로 서명을 끈다. push는 `--no-verify`로 `pre-push` 훅만 건너뛴다. 그 밖의 훅(`prepare-commit-msg`, `post-commit` 등)과 `pull --rebase`가 다시 만드는 커밋의 서명, `push.gpgSign` 같은 설정은 사용자 git 설정을 따른다.
+
+## 인수인계
+
+`wrap --handoff`는 세션 문서의 `## Handoff` 절을 그대로 두고 `handoffs/<세션 파일 이름>`에 인수인계 파일을 하나 더 만든다. 대응하는 `.taken.*` 표시 파일이 없으면 열린 인수인계다. `take ID --agent NAME`은 기존 파일을 고치지 않고 `handoffs/<ID>.taken.<agent>.<host>` 파일을 새로 만든다. 이미 받아 온 표시 파일에 같은 agent가 있으면 어느 머신에서 만든 것이든 다시 가져가기를 거부한다. 프로젝트 밖에서 쓴 인수인계는 `shared/handoffs/`에 생긴다. `take`는 현재 프로젝트의 `handoffs/`에서 ID를 먼저 찾고, 없으면 `shared/handoffs/`에서 찾는다.
+
+이 보장은 약하다. 두 머신이 서로 `sync`하기 전에 같은 인수인계를 가져가면 git으로는 막을 수 없다. 표시 파일이 둘 생기고 `brief`가 `duplicate take`로 경고한다.
+
+`brief`는 먼저 한도의 절반을 열린 인수인계에, 3/16씩을 후보와 최근 세션에 나눠 최신순으로 채운다. 남은 자리는 아직 생략이 있는 섹션에 인수인계, 후보, 세션 순으로 준다. 항목은 통째로만 빼고 섹션마다 생략 개수를 적는다. 위키가 git clone이면 `.git/FETCH_HEAD` 시각을 보고 한 번도 받아오지 않았거나 24시간이 지났을 때 경고한다.
+
+## 후보 상태
+
+후보는 `inbox/candidates/`에 남고 상태만 바뀐다. `knowledge/`로 옮기거나 복사하지 않는다.
+
+| 상태 | 뜻 |
+| --- | --- |
+| `needs-review` | 출처 없이 만든 검토 전 후보 |
+| `candidate-with-evidence` | `--source`로 출처를 붙인 검토 전 후보 |
+| `accepted` | owner가 받아들였다. `accept --decided-by owner`로만 바뀐다 |
+| `rejected` | 받아들이지 않았다. 파일은 지우지 않는다 |
+
+결정하면 머리말의 `status` 줄이 바뀌고 `decided_by`, `decided_at`, `reason`이 붙는다. `decided_by`와 `reason`은 한 줄짜리 JSON 문자열이고 `decided_at`은 `created`처럼 따옴표 없는 ISO 시각이다. 결정자와 사유도 비밀값을 가린다. 닫는 `---` 아래 본문은 바이트 단위로 그대로다. 이미 결정한 후보는 `이미 결정된 후보입니다: <path> (<status>)`로 거부한다. 위키 안의 `*/inbox/candidates/*.md` 실제 파일만 받으며 심볼릭 링크나 위키 밖 경로는 거부한다. 결정은 `log.md`에도 남는다.
+
+## 기록 불변 규칙
+
+세션 기록과 인수인계 파일은 만든 뒤 고치지 않는다. 새 파일은 같은 이름이 이미 있으면 실패하는 방식(`O_EXCL`에 해당하는 하드 링크 생성)으로 만들어 두 프로세스가 서로 덮어쓰지 않는다. 예외는 둘이다. `log.md`는 끝에 이어 쓰기만 하고 git에서는 `merge=union`으로 합친다. 후보는 `accept`나 `reject`가 머리말만 원자적으로 바꾼다. 같은 후보를 두 머신에서 동시에 결정하지 않도록 정리는 한 번에 한 머신에서 한다.
+
+## 프로젝트 분류
+
+`wiki.toml`의 프로젝트마다 `category`를 둔다. 새 프로젝트는 빈 값이고, 이 키가 없는 예전 `wiki.toml`도 그대로 읽는다. 폴더는 분류와 관계없이 `projects/<이름>/` 한 단계로 평평하다. 분류 값은 64자 이하이고 제어 문자를 넣을 수 없다.
+
+```sh
+llm-wiki category api backend
+llm-wiki search 캐시 --category backend
+```
+
+## owner 작업: 기록 이전과 실제 왕복 확인
+
+아래는 owner가 직접 할 일이다. 도구나 에이전트가 대신 실행하지 않는다.
+
+1. GitHub에 private 저장소 `my-llm-wiki`를 만든다. 공개 저장소로 만들었다면 아무것도 올리기 전에 private으로 바꾼다.
+2. 머신(M3, VM)마다 deploy key를 만들어 쓰기 권한으로 등록하고, `~/.ssh/config`에 호스트 별칭(`github-llm-wiki`)과 `IdentityFile`을 적는다. 한 저장소에 같은 deploy key를 두 번 등록할 수 없으므로 머신마다 키를 따로 만든다.
+3. 위 순서대로 첫 머신에서 `init --central`과 `add-project`, `sync`를 실행하고 다른 머신에서 `sync --pull-only`를 실행한다. 두 머신에 `roots.json`을 둔다.
+4. 이 저장소 안의 `llm-wiki/` 기록을 `my-llm-wiki`로 옮긴다. `my-llm-wiki`에서 `add-project llm-wiki-cli --category personal`을 실행한 뒤 `llm-wiki/projects/llm-wiki-cli/`의 `sessions/`, `inbox/`, `knowledge/` 파일을 같은 경로로 복사한다(`cp -Rpn`). 공유 영역 파일도 `shared/`로 복사한다. 원래 `log.md` 항목은 옮기지 않는다. 복사한 뒤 원본과 사본의 파일 수와 `shasum -a 256` 값을 비교하고, `sync`가 성공하고 다른 머신의 `sync --pull-only`에서도 같은 파일이 보이는지 확인한다. 그다음에만 원래 `llm-wiki/`를 지우고, 이 저장소 작업 디렉터리를 `my-llm-wiki`의 `llm-wiki-cli` 프로젝트로 `roots.json`에 매핑한다.
+5. 왕복 확인: M3에서 `wrap --handoff` 후 `sync`, VM에서 `sync --pull-only`와 `brief`로 인수인계가 보이는지, `take` 후 `sync`, M3에서 `sync --pull-only` 뒤 그 인수인계가 열린 목록에서 빠졌는지 확인한다. VM에서도 `wrap` 후 `sync`해 양쪽 `log.md`에 두 머신의 항목이 모두 남는지 본다.
+6. 중단 확인: 비밀값이 든 파일을 하나 만들어 `sync`가 `secret_detected`로 멈추고 원격이 그대로인지 확인한 뒤 그 파일을 지운다.
 
 ## QMD는 선택 사항
 
@@ -90,7 +180,7 @@ llm-wiki qmd-sync --embed
 
 ## 에이전트 연결
 
-`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만들며, 작업 시작 전 검색하고 종료 때 `wrap`을 실행하라는 규칙을 담는다. `.gjc/skills/llm-wiki-wrap/SKILL.md`도 만든다. 사용자가 "세션 마무리"나 "세션 종료"라고 하면 에이전트가 이 스킬을 따라 `llm-wiki wrap`으로 세션 기록을 남긴다. 이 동작은 에이전트에게 주는 지침일 뿐 자동 훅이 아니다. 에이전트가 따르지 않으면 기록이 남지 않고, `wrap`은 중복을 검사하지 않아 같은 세션을 두 번 실행하면 기록도 두 개가 된다. 기록을 저장해도 임시 파일, 컨테이너, 서버는 정리되지 않는다. 스킬은 정리를 따로 수행하고 실제로 없어졌는지 확인한 뒤에만 정리했다고 보고하라고 안내한다. 생성된 지침은 관찰한 사실과 추정·미검증 항목을 `handoff`까지 나눠 쓰고, `verification`에 실제 명령, 결과, 근거 위치를 적도록 요구한다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다. `--no-gjc`는 규칙과 스킬을 모두 건너뛴다.
+`init`은 루트 `AGENTS.md`에 `<!-- llm-wiki:begin -->` 블록을 만들거나 갱신한다. `.gjc/rules/llm-wiki.md`도 만든다. 이 규칙은 작업을 시작할 때 `sync --pull-only`, `brief`, 검색 순서로 실행하고 마칠 때 `wrap` 뒤 `sync`를 실행하라고 안내한다. 후보의 `accept`와 `reject`는 owner가 지시한 경우에만 실행하게 한다. 중앙 저장소가 아닌 위키에서는 `sync`가 `guard` 오류를 내므로 건너뛰고, 충돌이 남아 생긴 `guard`(`rebase_in_progress`)에서는 멈추고 사용자에게 알린다. `.gjc/skills/llm-wiki-wrap/SKILL.md`도 만든다. 사용자가 "세션 마무리"나 "세션 종료"라고 하면 에이전트가 이 스킬을 따라 `llm-wiki wrap`으로 세션 기록을 남기고 `llm-wiki sync`로 올린다. 충돌이나 비밀값 오류가 나면 직접 풀지 않고 사용자에게 `recovery`를 보여 준다. 이 동작은 에이전트에게 주는 지침일 뿐 자동 훅이 아니다. 에이전트가 따르지 않으면 기록이 남지 않고, `wrap`은 중복을 검사하지 않아 같은 세션을 두 번 실행하면 기록도 두 개가 된다. 기록을 저장해도 임시 파일, 컨테이너, 서버는 정리되지 않는다. 스킬은 정리를 따로 수행하고 실제로 없어졌는지 확인한 뒤에만 정리했다고 보고하라고 안내한다. 생성된 지침은 관찰한 사실과 추정·미검증 항목을 `handoff`까지 나눠 쓰고, `verification`에 실제 명령, 결과, 근거 위치를 적도록 요구한다. `index.md`의 프로젝트 목록은 `<!-- llm-wiki:projects:begin -->`와 `<!-- llm-wiki:projects:end -->` 사이만 갱신한다. `--no-agents`, `--no-gjc`로 만들지 않을 수 있다. `--no-gjc`는 규칙과 스킬을 모두 건너뛴다.
 
 에이전트는 `index.md`를 먼저 읽고 현재 프로젝트 범위에서 검색한다. 확신이 낮은 내용은 `promote`로 후보에 둔다. `promote`는 `knowledge/`에 쓰지 않으며 `reviewed`나 `stable` 상태로 바꾸지 않는다. 세션 기록은 `created` 시점의 관찰이다. 최신 기록이라고 자동으로 맞는 것도 아니므로 현재 코드와 실행 결과로 다시 확인한다. 이전 세션 기록은 고쳐 쓰지 않는다.
 

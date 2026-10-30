@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 PROJECT_NAME = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
@@ -24,6 +24,11 @@ class Wiki:
     name: str
     projects: dict[str, str]
     legacy: bool = False
+    # Free-form label per project for grouping in search and status; folders stay flat. Missing means "".
+    categories: dict[str, str] = field(default_factory=dict)
+
+    def category(self, project: str) -> str:
+        return self.categories.get(project, "")
 
 
 def validate_project_name(name: str) -> str:
@@ -78,20 +83,39 @@ def _load(directory: Path, legacy: bool = False) -> Wiki:
     if not isinstance(projects, dict):
         raise WikiError("projects must be a table.")
     parsed: dict[str, str] = {}
+    categories: dict[str, str] = {}
     for project_name, entry in projects.items():
         validate_project_name(project_name)
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
             raise WikiError(f"Project {project_name} needs a path.")
+        category = entry.get("category", "")
+        if not isinstance(category, str):
+            raise WikiError(f"Project {project_name} category must be a string.")
         parsed[project_name] = entry["path"]
-    return Wiki(root, directory, mode, name, parsed)
+        categories[project_name] = category
+    return Wiki(root, directory, mode, name, parsed, categories=categories)
+
+
+def load_wiki_at(directory: Path) -> Wiki:
+    """Load the wiki whose wiki.toml sits directly in directory, whatever the directory is called."""
+    directory = directory.expanduser().resolve()
+    if not has_config(directory):
+        raise WikiError(f"No wiki.toml in {directory}.")
+    return _load(directory)
 
 
 def discover(start: Path | None = None) -> Wiki:
-    """Find the nearest wiki root while walking from start upward."""
+    """Find the wiki for start (or LLM_WIKI_ROOT, or the cwd).
+
+    An explicit start that holds a wiki.toml directly is loaded as is, so a central clone works under any
+    name. Otherwise the nearest llm-wiki directory is searched while walking upward.
+    """
     requested = start or Path(os.environ.get("LLM_WIKI_ROOT", Path.cwd()))
     current = requested.expanduser().resolve()
     if current.is_file():
         current = current.parent
+    if (start is not None or "LLM_WIKI_ROOT" in os.environ) and has_config(current):
+        return _load(current)
     for candidate in (current, *current.parents):
         for directory in wiki_dirs(candidate):
             if has_config(directory):
@@ -99,6 +123,107 @@ def discover(start: Path | None = None) -> Wiki:
             if is_legacy_dir(directory):
                 return _load(directory, legacy=True)
     raise WikiError("No llm-wiki found. Run 'llm-wiki init' first.")
+
+
+ROOTS_ENTRY_KEYS = {"wiki", "project"}
+
+
+def roots_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base).expanduser() / "llm-wiki" / "roots.json"
+
+
+def _absolute(value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise WikiError(f"roots.json: {label} must be a non-empty string.")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise WikiError(f"roots.json: {label} must be an absolute path: {value}")
+    return Path(os.path.normpath(path))
+
+
+def read_roots() -> dict[Path, tuple[Path, str]]:
+    """Read the per-machine map from a project directory to (wiki clone, project name).
+
+    The file is ``{"version": 1, "roots": {"/abs/project": {"wiki": "/abs/clone", "project": "name"}}}``.
+    A missing file means no mapping; anything malformed is an error rather than a silent fallback.
+    """
+    path = roots_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise WikiError(f"Cannot read {path}.") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WikiError(f"roots.json is not valid JSON: {path}") from exc
+    if not isinstance(data, dict) or set(data) != {"version", "roots"}:
+        raise WikiError("roots.json must be an object with exactly version and roots.")
+    if data["version"] != 1 or type(data["version"]) is not int:
+        raise WikiError("roots.json version must be 1.")
+    if not isinstance(data["roots"], dict):
+        raise WikiError("roots.json roots must be an object.")
+    result: dict[Path, tuple[Path, str]] = {}
+    for key, entry in data["roots"].items():
+        project_dir = _absolute(key, f"root key {key!r}")
+        if not isinstance(entry, dict) or set(entry) != ROOTS_ENTRY_KEYS:
+            raise WikiError(f"roots.json entry for {key} must have exactly wiki and project.")
+        clone = _absolute(entry["wiki"], f"wiki for {key}")
+        if not isinstance(entry["project"], str):
+            raise WikiError(f"roots.json project for {key} must be a string.")
+        validate_project_name(entry["project"])
+        if project_dir in result:
+            raise WikiError(f"roots.json has a duplicate root after normalization: {project_dir}")
+        result[project_dir] = (clone, entry["project"])
+    return result
+
+
+def _mapped(cwd: Path) -> tuple[Path, str] | None:
+    here = Path(os.path.normpath(cwd.expanduser().resolve()))
+    best: tuple[int, tuple[Path, str]] | None = None
+    for project_dir, target in read_roots().items():
+        try:
+            resolved = Path(os.path.normpath(project_dir.resolve()))
+            here.relative_to(resolved)
+        except ValueError:
+            continue
+        depth = len(resolved.parts)
+        if best is None or depth > best[0]:
+            best = (depth, target)
+    return best[1] if best else None
+
+
+def sync_directory(cwd: Path, root: Path | None) -> Path | None:
+    """The clone a sync would act on, found without reading its wiki.toml: --root, LLM_WIKI_ROOT, or roots.json."""
+    if root is not None:
+        return root.expanduser()
+    if "LLM_WIKI_ROOT" in os.environ:
+        return Path(os.environ["LLM_WIKI_ROOT"]).expanduser()
+    mapped = _mapped(cwd)
+    return mapped[0] if mapped is not None and os.path.isdir(mapped[0]) else None
+
+
+def discover_for(cwd: Path, root: Path | None) -> tuple[Wiki, str | None]:
+    """Resolve the wiki and, when roots.json supplies one, the project for a working directory.
+
+    Order: explicit ``root``, then LLM_WIKI_ROOT, then roots.json, then the upward llm-wiki search.
+    """
+    if root is not None or "LLM_WIKI_ROOT" in os.environ:
+        return discover(root), None
+    mapped = _mapped(cwd)
+    if mapped is not None:
+        # Only the mapping in use must be ready: a clone that is not set up yet must not break the others.
+        if not os.path.isdir(mapped[0]):
+            raise WikiError(f"roots.json wiki directory does not exist: {mapped[0]}")
+        if not has_config(mapped[0]):
+            raise WikiError(f"roots.json wiki directory has no wiki.toml: {mapped[0]}; run 'llm-wiki sync --pull-only' or 'init --central' there.")
+        wiki = load_wiki_at(mapped[0])
+        if mapped[1] not in wiki.projects:
+            raise WikiError(f"등록되지 않은 프로젝트: {mapped[1]}; add-project를 먼저 실행")
+        return wiki, mapped[1]
+    return discover(cwd), None
 
 
 def require_writable(wiki: Wiki) -> None:
@@ -129,12 +254,17 @@ def current_project(wiki: Wiki, cwd: Path | None = None, override: str | None = 
 
 
 def write_config(wiki: Wiki) -> None:
-    values = [wiki.mode, wiki.name, *wiki.projects.keys(), *wiki.projects.values()]
+    values = [wiki.mode, wiki.name, *wiki.projects.keys(), *wiki.projects.values(), *(wiki.category(name) for name in wiki.projects)]
     if any(any(ord(character) < 32 or ord(character) == 127 for character in value) for value in values):
         raise WikiError("Wiki configuration values must not contain control characters.")
     lines = ["[wiki]", "version = 1", f"mode = {json.dumps(wiki.mode, ensure_ascii=False)}", f"name = {json.dumps(wiki.name, ensure_ascii=False)}", ""]
     for name in sorted(wiki.projects):
-        lines.extend((f"[projects.{json.dumps(name, ensure_ascii=False)}]", f"path = {json.dumps(wiki.projects[name], ensure_ascii=False)}", ""))
+        lines.extend((
+            f"[projects.{json.dumps(name, ensure_ascii=False)}]",
+            f"path = {json.dumps(wiki.projects[name], ensure_ascii=False)}",
+            f"category = {json.dumps(wiki.category(name), ensure_ascii=False)}",
+            "",
+        ))
     content = "\n".join(lines)
     try:
         content.encode("utf-8")  # reject lone surrogates before anything touches the disk
@@ -152,7 +282,32 @@ def write_config(wiki: Wiki) -> None:
         raise
 
 
-def add_project(wiki: Wiki, name: str, path: str) -> Wiki:
+MAX_CATEGORY = 64
+
+
+def validate_category(value: object) -> str:
+    if not isinstance(value, str):
+        raise WikiError("Category must be a string.")
+    value = value.strip()
+    if len(value) > MAX_CATEGORY:
+        raise WikiError(f"Category must be at most {MAX_CATEGORY} characters.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise WikiError("Category must not contain control characters.")
+    return value
+
+
+def set_category(wiki: Wiki, project: str, category: str) -> Wiki:
+    require_writable(wiki)
+    if project not in wiki.projects:
+        raise WikiError(f"Unknown project: {project}")
+    categories = {name: wiki.category(name) for name in wiki.projects}
+    categories[project] = validate_category(category)
+    updated = replace(wiki, categories=categories)
+    write_config(updated)
+    return updated
+
+
+def add_project(wiki: Wiki, name: str, path: str, category: str = "") -> Wiki:
     require_writable(wiki)
     if wiki.mode == "single":
         raise WikiError("Cannot add a project in single mode.")
@@ -171,6 +326,8 @@ def add_project(wiki: Wiki, name: str, path: str) -> Wiki:
         raise WikiError(f"Project path already exists: {clean_path}")
     projects = dict(wiki.projects)
     projects[name] = clean_path
-    updated = Wiki(wiki.root, wiki.directory, wiki.mode, wiki.name, projects)
+    categories = {project: wiki.category(project) for project in wiki.projects}
+    categories[name] = validate_category(category)
+    updated = replace(wiki, projects=projects, categories=categories)
     write_config(updated)
     return updated

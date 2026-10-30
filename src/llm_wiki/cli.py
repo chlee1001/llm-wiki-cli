@@ -8,11 +8,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import WikiError, current_project, discover, require_writable
-from .init import init_wiki, managed_status, refresh_command, register_project
+from .brief import DEFAULT_LIMIT, brief
+from .config import WikiError, current_project, discover_for, has_config, require_writable, set_category, sync_directory
+from .curate import decide, pending, review
+from .handoff import take
+from .init import init_central, init_wiki, managed_status, refresh_command, register_project
 from .qmd import qmd_sync
 from .records import promote, wrap
 from .search import search
+from .sync import SyncError, require_finished_rebase, sync_wiki
 
 
 class ParseError(Exception):
@@ -47,11 +51,13 @@ def parser() -> ArgumentParser:
     init.add_argument("--path", default=".")
     init.add_argument("--no-agents", action="store_true")
     init.add_argument("--no-gjc", action="store_true")
+    init.add_argument("--central", action="store_true", help="Initialize --path itself as a central wiki clone (no managed files).")
 
     add = subcommands.add_parser("add-project", help="Register an umbrella project")
     _common(add)
     add.add_argument("name")
     add.add_argument("--path")
+    add.add_argument("--category", default="")
 
     status = subcommands.add_parser("status", help="Show wiki status")
     _common(status)
@@ -62,12 +68,17 @@ def parser() -> ArgumentParser:
     scope = find.add_mutually_exclusive_group()
     scope.add_argument("--project")
     scope.add_argument("--all-projects", action="store_true")
+    scope.add_argument("--category", help="Search only the projects with this category.")
     find.add_argument("--engine", choices=("auto", "qmd", "text"), default="auto")
     find.add_argument("-n", type=int, default=10)
 
-    sync = subcommands.add_parser("qmd-sync", help="Synchronize QMD collections")
-    _common(sync)
-    sync.add_argument("--embed", action="store_true")
+    qmd = subcommands.add_parser("qmd-sync", help="Synchronize QMD collections")
+    _common(qmd)
+    qmd.add_argument("--embed", action="store_true")
+
+    central = subcommands.add_parser("sync", help="Commit, rebase, and push the wiki repository")
+    _common(central)
+    central.add_argument("--pull-only", action="store_true", help="Fetch and fast-forward only; never commit or push.")
 
     session = subcommands.add_parser("wrap", help="Record a completed session")
     _common(session)
@@ -91,6 +102,33 @@ def parser() -> ArgumentParser:
     where = candidate.add_mutually_exclusive_group()
     where.add_argument("--project")
     where.add_argument("--shared", action="store_true")
+
+    grouping = subcommands.add_parser("category", help="Show or set a project's category")
+    _common(grouping)
+    grouping.add_argument("project")
+    grouping.add_argument("value", nargs="?")
+
+    examining = subcommands.add_parser("review", help="Show one candidate's review material, or list the undecided ones")
+    _common(examining)
+    examining.add_argument("path", nargs="?")
+    examining.add_argument("--project")
+    for name, summary in (("accept", "Accept a candidate (owner only)"), ("reject", "Reject a candidate without deleting it")):
+        deciding = subcommands.add_parser(name, help=summary)
+        _common(deciding)
+        deciding.add_argument("path")
+        deciding.add_argument("--decided-by", default="")
+        deciding.add_argument("--reason", required=True)
+
+    starting = subcommands.add_parser("brief", help="Print a size-bounded start-of-session brief")
+    _common(starting)
+    starting.add_argument("--project")
+    starting.add_argument("--max-bytes", type=int, default=DEFAULT_LIMIT)
+
+    taking = subcommands.add_parser("take", help="Mark a handoff as taken by an agent")
+    _common(taking)
+    taking.add_argument("handoff_id")
+    taking.add_argument("--agent", default="gjc")
+    taking.add_argument("--project")
     return command
 
 
@@ -169,6 +207,9 @@ def _normalize_input(args: argparse.Namespace) -> None:
             args.agent = "gjc"
         if args.candidate is None:
             args.candidate = []
+    elif args.command == "init":
+        if args.central and (args.no_agents or args.no_gjc or args.mode is not None):
+            raise InputError("--central cannot be combined with --mode, --no-agents, or --no-gjc")
     elif args.command == "promote":
         fields = ("title", "body", "source", "project", "shared")
         if args.input_json is not None:
@@ -188,49 +229,92 @@ def _count(directory: Path) -> int:
     return sum(1 for _ in directory.rglob("*.md")) if directory.exists() else 0
 
 
-def _status(wiki, cwd: Path) -> dict[str, Any]:
+def _status(wiki, cwd: Path, mapped_project: str | None = None) -> dict[str, Any]:
     projects = []
     for name in sorted(wiki.projects):
         base = wiki.directory / "projects" / name
-        projects.append({"name": name, "path": wiki.projects[name], "knowledge": _count(base / "knowledge"), "sessions": _count(base / "sessions"), "candidates": _count(base / "inbox" / "candidates")})
+        projects.append({"name": name, "path": wiki.projects[name], "knowledge": _count(base / "knowledge"), "sessions": _count(base / "sessions"), "candidates": _count(base / "inbox" / "candidates"), "category": wiki.category(name)})
     managed = managed_status(wiki)
-    return {"root": str(wiki.root), "mode": wiki.mode, "current_project": current_project(wiki, cwd), "projects": projects, "qmd_available": shutil.which("qmd") is not None, "managed": managed, "refresh": refresh_command(wiki, managed)}
+    return {"root": str(wiki.root), "mode": wiki.mode, "current_project": current_project(wiki, cwd, mapped_project), "projects": projects, "qmd_available": shutil.which("qmd") is not None, "managed": managed, "refresh": refresh_command(wiki, managed)}
 
 
 def execute(args: argparse.Namespace) -> tuple[int, Any]:
     cwd = Path.cwd()
     if args.command == "init":
+        if args.central:
+            result = init_central(Path(args.path), args.name)
+            return 0, result
         result = init_wiki(Path(args.path), args.mode, args.name, not args.no_agents, not args.no_gjc)
         return 0, result
-    wiki = discover(Path(args.root) if args.root else None)
-    try:
-        cwd.resolve().relative_to(wiki.root)
-    except ValueError:
-        cwd = wiki.root
+    if args.command == "sync":
+        target = sync_directory(cwd, Path(args.root) if args.root else None)
+        if target is not None:
+            require_finished_rebase(target)
+            if args.pull_only and not has_config(target):
+                # A clone made before the first push has no wiki.toml; pulling is exactly what brings it in.
+                return 0, sync_wiki(target, pull_only=True)
+    wiki, mapped_project = discover_for(cwd, Path(args.root) if args.root else None)
+    if mapped_project is None:
+        try:
+            cwd.resolve().relative_to(wiki.root)
+        except ValueError:
+            cwd = wiki.root
     if args.command == "add-project":
         require_writable(wiki)
-        updated, note = register_project(wiki, args.name, args.path)
+        updated, note = register_project(wiki, args.name, args.path, args.category)
         result: dict[str, Any] = {"project": args.name, "path": updated.projects[args.name]}
         if note:
             result["note"] = note
         return 0, result
     if args.command == "status":
-        return 0, _status(wiki, cwd)
+        return 0, _status(wiki, cwd, mapped_project)
+    if args.command == "review":
+        if args.path is not None:
+            return 0, review(wiki, args.path)
+        project = args.project if args.project is not None else current_project(wiki, cwd, mapped_project)
+        return 0, {"candidates": pending(wiki, project)}
+    if args.command in {"accept", "reject"}:
+        return 0, decide(wiki, args.path, f"{args.command}ed", args.decided_by, args.reason)
+    if args.command == "category":
+        if args.value is None:
+            if args.project not in wiki.projects:
+                raise WikiError(f"Unknown project: {args.project}")
+            return 0, {"project": args.project, "category": wiki.category(args.project)}
+        updated = set_category(wiki, args.project, args.value)
+        return 0, {"project": args.project, "category": updated.category(args.project)}
+    if args.command == "brief":
+        project = args.project if args.project is not None else current_project(wiki, cwd, mapped_project)
+        result = brief(wiki, project, args.max_bytes)
+        return 0, result if args.json else result["text"]
+    if args.command == "take":
+        require_writable(wiki)
+        # Without a project the handoff is looked up in shared/, where wrap writes it in that case.
+        project = args.project if args.project is not None else current_project(wiki, cwd, mapped_project)
+        return 0, {"path": str(take(wiki, project, args.handoff_id, args.agent))}
     if args.command == "search":
         if args.n < 1:
             raise WikiError("-n must be at least 1.")
-        results, engine, note = search(wiki, args.query, cwd, args.project, args.all_projects, args.engine, args.n)
+        scoped = args.project if args.project is not None or args.category is not None else mapped_project
+        results, engine, note = search(wiki, args.query, cwd, scoped, args.all_projects, args.engine, args.n, category=args.category)
         return 0, {"engine": engine, "note": note, "results": results}
+    if args.command == "sync":
+        require_writable(wiki)
+        return 0, sync_wiki(wiki.directory, args.pull_only)
     if args.command == "qmd-sync":
         require_writable(wiki)
         qmd_sync(wiki, args.embed)
         return 0, {}
     if args.command == "wrap":
-        path, candidates = wrap(wiki, args.topic, args.task, args.completed, args.verification, args.handoff, args.not_tested, args.agent, args.project, args.candidate, cwd)
-        return 0, {"path": str(path), "candidates": [str(item) for item in candidates]}
+        selected = args.project if args.project is not None else mapped_project
+        path, candidates = wrap(wiki, args.topic, args.task, args.completed, args.verification, args.handoff, args.not_tested, args.agent, selected, args.candidate, cwd, handoff_file=True)
+        result = {"path": str(path), "candidates": [str(item) for item in candidates]}
+        handoff_path = path.parent.parent.parent.parent / "handoffs" / path.name
+        if handoff_path.is_file():
+            result["handoff"] = str(handoff_path)
+        return 0, result
     if args.command == "promote":
         require_writable(wiki)
-        selected = current_project(wiki, cwd, args.project) if not args.shared else None
+        selected = None if args.shared else current_project(wiki, cwd, args.project if args.project is not None else mapped_project)
         path = promote(wiki, args.title, args.body, args.source, selected, args.shared)
         return 0, {"path": str(path)}
     raise AssertionError(f"Unhandled command: {args.command}")
@@ -258,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         code, result = execute(args)
+    except SyncError as exc:
+        if args.json:
+            _emit(exc.to_json())
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
     except FileNotFoundError as exc:
         if args.json:
             _emit({"error": str(exc)})
@@ -270,7 +360,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"error: {exc}", file=sys.stderr)
         return 1
-    _emit(result)
+    if isinstance(result, str):
+        sys.stdout.write(result)
+    else:
+        _emit(result)
     return code
 
 

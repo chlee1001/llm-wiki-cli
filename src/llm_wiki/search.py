@@ -10,9 +10,14 @@ from .config import Wiki, WikiError, current_project
 from .qmd import Runner, collection_name, collections, qmd_search, run_command
 
 
-def search_scope(wiki: Wiki, cwd: Path, project: str | None, all_projects: bool) -> tuple[list[Path], list[str]]:
+def search_scope(wiki: Wiki, cwd: Path, project: str | None, all_projects: bool, category: str | None = None) -> tuple[list[Path], list[str]]:
     if wiki.legacy:
         return [wiki.directory], []
+    if category is not None:
+        members = [name for name in sorted(wiki.projects) if wiki.category(name) == category]
+        if not members:
+            raise WikiError(f"No project has category: {category}")
+        return [wiki.directory / "projects" / name for name in members], members
     selected = current_project(wiki, cwd, project)
     if all_projects:
         return [wiki.directory], ["shared", *wiki.projects]
@@ -33,6 +38,8 @@ def text_search(query: str, directories: list[Path], root: Path, limit: int) -> 
         if not directory.exists():
             continue
         for path in directory.rglob("*.md"):
+            if "handoffs" in path.relative_to(directory).parts:
+                continue  # the session's own Handoff section is indexed; the file would duplicate it
             try:
                 content = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
@@ -86,9 +93,13 @@ def search(
     limit: int = 10,
     runner: Runner | None = None,
     qmd_available: bool | None = None,
+    category: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
-    """Search notes; each result also carries the note's recorded type, status and created time."""
-    results, used, note = _search(wiki, query, cwd, project, all_projects, engine, limit, runner, qmd_available)
+    """Search notes; each result also carries the note's recorded type, status and created time.
+
+    ``category`` limits the search to the projects with that category (shared notes are not included).
+    """
+    results, used, note = _search(wiki, query, cwd, project, all_projects, engine, limit, runner, qmd_available, category)
     for result in results:
         result.update(record_metadata(wiki.root / result["path"]))
     return results, used, note
@@ -104,8 +115,9 @@ def _search(
     limit: int,
     runner: Runner | None,
     qmd_available: bool | None,
+    category: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
-    directories, names = search_scope(wiki, cwd, project, all_projects)
+    directories, names = search_scope(wiki, cwd, project, all_projects, category)
     if engine not in {"auto", "qmd", "text"}:
         raise WikiError("Search engine must be auto, qmd, or text.")
     available = shutil.which("qmd") is not None if qmd_available is None else qmd_available

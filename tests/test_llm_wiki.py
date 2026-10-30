@@ -18,7 +18,7 @@ from llm_wiki import cli
 from llm_wiki.config import WikiError, add_project, current_project, discover, is_legacy_dir
 from llm_wiki.init import init_wiki, register_project
 from llm_wiki.qmd import collection_name, qmd_search, qmd_sync, run_command
-from llm_wiki.records import promote, wrap
+from llm_wiki.records import _clean_single, promote, wrap
 from llm_wiki.redact import redact
 from llm_wiki.search import search
 from llm_wiki.templates import GJC_FRONT_MATTER, agents_block, gjc_rule, gjc_skill, legacy_wiki_readme, wiki_readme
@@ -725,6 +725,14 @@ class LlmWikiTests(unittest.TestCase):
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(redact(raw)[0], expected)
+                self.assert_fixed_point(raw, expected)
+
+    def assert_fixed_point(self, raw: str, text: str) -> None:
+        """What the tool writes for raw survives a second pass: the redacted body text, and the
+        one-line header value json.dumps stores (agent, decided_by, reason)."""
+        header = _clean_single(raw)
+        for written in (text, json.dumps(header), json.dumps(header, ensure_ascii=False), f"reason: {json.dumps(header)}\nnext: 1"):
+            self.assertEqual(redact(written)[0], written)
 
     def test_redaction_keeps_earlier_placeholders_intact(self) -> None:
         text, count = redact("token=ghp_" + "a" * 36 + " session=eyJa.b.c")
@@ -747,6 +755,7 @@ class LlmWikiTests(unittest.TestCase):
         }
         for raw, expected in cases.items():
             self.assertEqual(redact(raw)[0], expected)
+            self.assert_fixed_point(raw, expected)
 
     def test_redaction_keeps_fields_after_quoted_value(self) -> None:
         cases = {
@@ -767,6 +776,7 @@ class LlmWikiTests(unittest.TestCase):
         }
         for raw, expected in cases.items():
             self.assertEqual(redact(raw), expected)
+            self.assert_fixed_point(raw, expected[0])
 
     def test_redaction_handles_escaped_and_repeated_quotes(self) -> None:
         cases = {
@@ -785,6 +795,7 @@ class LlmWikiTests(unittest.TestCase):
         }
         for raw, expected in cases.items():
             self.assertEqual(redact(raw), expected)
+            self.assert_fixed_point(raw, expected[0])
 
     def test_redaction_backslash_terminated_value_runs_to_line_end(self) -> None:
         # Documented trade-off: a backslash escapes the closing quote, so the value stays open.
@@ -802,12 +813,14 @@ class LlmWikiTests(unittest.TestCase):
         for raw in ("token=a" + ")" * 200_000 + "b", "password=[" + "]" * 200_000 + "x", 'password="a ' * 50_000,
                     'password="a\\' * 50_000, '"password":"' + '\\"' * 100_000, "a" * 200_000,
                     "password=" + "'\"" * 100_000, 'password="x"' + '"a"' * 100_000, "password=x" + '"a' * 100_000, '\\"password\\":\\"' + "\\x" * 100_000,
+                    "token=[REDACTED_TOKEN]" + '\\"' * 100_000 + "x", "password=" + '\\"' * 100_000 + "x",
+                    "Cookie: [REDACTED_AUTH]" + "\\'" * 100_000 + "x",
                     ):
             redact(raw)
         self.assertLess(time.monotonic() - started, 5)
 
     def test_redaction_is_linear_on_repeated_keywords_and_escapes(self) -> None:
-        for raw in ('password=\\"' + "\\\\\\\\a" * 30, "token" * 20_000, "session" * 15_000, "<" + "token" * 20_000,
+        for raw in ('password=\\"' + "\\\\\\\\a" * 30, "token" * 20_000, "session" * 15_000, "xsid" + " " * 50_000 + "x", "sid =" * 20_000, "<" + "token" * 20_000,
                     "password=x" + '",\\' * 20_000, "eyJ-" * 25_000, '"Cookie:' * 40_000,
                     'token=x\\" ' * 20_000, "\n".join([('token=x\\" ' * 26)[:250]] * 2_000), "a-" * 50_000):
             with self.subTest(raw=raw[:20], length=len(raw)):

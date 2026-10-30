@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, validate_project_name, wiki_dirs, write_config
+from .config import Wiki, WikiError, add_project, discover, has_config, is_legacy_dir, is_wiki_dir_name, load_wiki_at, validate_project_name, wiki_dirs, write_config
 from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, legacy_wiki_readme, wiki_readme
 
 BEGIN = "<!-- llm-wiki:begin -->"
@@ -21,6 +21,26 @@ def _write_missing(path: Path, content: str, created: list[str], existing: list[
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     created.append(str(path))
+
+
+GITATTRIBUTES_LINE = "log.md merge=union"
+GITIGNORE_LINE = ".llm-wiki-tmp/"
+
+
+def _ensure_line(path: Path, line: str, created: list[str], existing: list[str], updated: list[str] | None = None) -> None:
+    """Make sure path contains line once, keeping every other line as it is."""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(line + "\n", encoding="utf-8")
+        created.append(str(path))
+        return
+    existing.append(str(path))
+    content = path.read_text(encoding="utf-8")
+    if line in content.splitlines():
+        return
+    path.write_text(content + ("" if content.endswith("\n") or not content else "\n") + line + "\n", encoding="utf-8")
+    if updated is not None:
+        updated.append(str(path))
 
 
 def _marked_span(content: str, path: Path, begin: str = BEGIN, end: str = END) -> tuple[int, int] | None:
@@ -146,6 +166,7 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
     if inside_wiki:
         raise WikiError(f"Cannot initialize inside an existing wiki directory: {inside_wiki}.")
     configured = has_config(directory)
+    # A directory that already holds wiki.toml may be a git clone; one without it must not be turned into a wiki.
     if not configured and os.path.exists(directory / ".git"):
         raise WikiError(f"Cannot initialize over a git repository: {directory}.")
     if configured:
@@ -201,6 +222,8 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
             updated.append(str(spec.path))
     _write_missing(directory / "index.md", index(wiki.projects), created, existing)
     _write_missing(directory / "log.md", "# LLM Wiki Log\n", created, existing)
+    _ensure_line(directory / ".gitattributes", GITATTRIBUTES_LINE, created, existing, updated)
+    _ensure_line(directory / ".gitignore", GITIGNORE_LINE, created, existing, updated)
     result: dict[str, object] = {"root": str(root), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing, "updated": updated}
     if wiki.mode == "umbrella":
         result["skipped"] = skipped
@@ -209,12 +232,48 @@ def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bo
     return result
 
 
-def register_project(wiki: Wiki, name: str, path: str | None) -> tuple[Wiki, str | None]:
+def init_central(directory: Path, name: str | None = None) -> dict[str, object]:
+    """Turn a central clone into a wiki whose root directory is the repository itself.
+
+    Only wiki files are created: no AGENTS.md, .gjc files, or wiki README, which belong to project workspaces.
+    The directory must already hold wiki.toml or contain nothing but an optional .git.
+    """
+    directory = directory.expanduser().resolve()
+    created: list[str] = []
+    existing: list[str] = []
+    updated: list[str] = []
+    if not directory.is_dir():
+        raise WikiError(f"Central wiki directory does not exist: {directory}.")
+    configured = has_config(directory)
+    if not configured:
+        stray = [child.name for child in directory.iterdir() if child.name != ".git"]
+        if stray:
+            raise WikiError(f"Central wiki directory must be empty apart from .git: {directory}.")
+        wiki = Wiki(directory.parent, directory, "umbrella", name or directory.name, {})
+        write_config(wiki)
+        created.append(str(directory / "wiki.toml"))
+    else:
+        wiki = load_wiki_at(directory)
+        existing.append(str(directory / "wiki.toml"))
+    for path in (directory / "shared" / "knowledge", directory / "shared" / "inbox" / "candidates"):
+        if not path.exists():
+            path.mkdir(parents=True)
+            created.append(str(path))
+    for project in wiki.projects:
+        ensure_project_layout(wiki, project, created)
+    _write_missing(directory / "index.md", index(wiki.projects), created, existing)
+    _write_missing(directory / "log.md", "# LLM Wiki Log\n", created, existing)
+    _ensure_line(directory / ".gitattributes", GITATTRIBUTES_LINE, created, existing, updated)
+    _ensure_line(directory / ".gitignore", GITIGNORE_LINE, created, existing, updated)
+    return {"root": str(directory), "mode": wiki.mode, "projects": wiki.projects, "created": created, "existing": existing, "updated": updated}
+
+
+def register_project(wiki: Wiki, name: str, path: str | None, category: str = "") -> tuple[Wiki, str | None]:
     begin, end = "<!-- llm-wiki:projects:begin -->", "<!-- llm-wiki:projects:end -->"
     index_path = wiki.directory / "index.md"
     content = index_path.read_bytes().decode("utf-8") if index_path.exists() else None
     span = None if content is None else _marked_span(content, index_path, begin, end)
-    updated = add_project(wiki, name, path or name)
+    updated = add_project(wiki, name, path or name, category)
     ensure_project_layout(updated, name)
     projects = index(updated.projects)
     block = projects[projects.index(begin) : projects.index(end) + len(end)]
