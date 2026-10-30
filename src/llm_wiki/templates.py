@@ -105,8 +105,9 @@ CURATION = (
 SETUP_HINT = (
     "If `llm-wiki` is not installed, or `status --json` fails with `No llm-wiki found`, a `roots.json` error, "
     "or an unregistered project, this workspace is not set up: tell the user and continue without the wiki. "
-    "Setup is the user's step: they connect a workspace to a central clone with "
-    "`llm-wiki init --path DIR --wiki CLONE --project NAME`; do not run `init` or `add-project`, and do not edit `roots.json` yourself."
+    "Setup is the user's call: a workspace is connected to a central clone with "
+    "`llm-wiki init --path DIR --wiki CLONE --project NAME`. Unless the user asks you to set it up, do not run `init` or `add-project`, "
+    "and do not edit `roots.json` yourself; when they do ask, follow the agent setup steps in the llm-wiki-cli README."
 )
 
 REFRESH_HINT = (

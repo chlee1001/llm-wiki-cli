@@ -7,12 +7,34 @@
 ## 설치
 
 ```sh
-uv tool install /path/to/llm-wiki-cli
+uv tool install --reinstall git+ssh://git@github.com/chlee1001/llm-wiki-cli.git
+# 로컬 clone에서 고친 소스를 바로 쓰려면
+uv tool install --reinstall --editable /path/to/llm-wiki-cli
 # 또는
 pipx install /path/to/llm-wiki-cli
 ```
 
-Python 3.11 이상이 필요하다.
+Python 3.11 이상이 필요하다. GitHub 저장소가 private이므로 GitHub 주소로 설치할 때는 그 저장소를 읽을 수 있는 SSH 키가 있어야 한다.
+
+## 에이전트에게 워크스페이스 설정 맡기기
+
+다른 워크스페이스의 에이전트 세션에 이 저장소의 경로나 GitHub 주소를 주고 "이 워크스페이스에 llm-wiki를 설정해 줘"라고 하면, 에이전트는 이 절을 따른다. 사용자가 설정을 요청한 경우에만 진행한다. 결정이 필요한 값(중앙 저장소 주소, 분류)은 추측하지 않고 묻는다. `WS`는 설정할 워크스페이스의 절대 경로다.
+
+1. 이미 설정됐는지 본다. `WS`에서 `llm-wiki status --json`이 성공하고 `workspace`가 `WS`이며 `managed`가 모두 `current`이면 할 일이 없다. 그 결과만 보고하고 끝낸다.
+2. CLI를 확인한다. `llm-wiki init --help`에 `--wiki`가 없거나 `llm-wiki`가 없으면 위 설치 절의 명령으로 설치한다. 받은 것이 로컬 경로면 `--editable` 명령을, GitHub 주소면 `git+ssh` 명령을 쓴다. 설치 뒤 `llm-wiki init --help`에 `--wiki`가 있는지 다시 확인한다.
+3. 중앙 위키 clone을 정한다. `~/.config/llm-wiki/roots.json`(`XDG_CONFIG_HOME`이 있으면 그 아래)에 이미 있는 `wiki` 경로가 하나면 그것을 쓴다. 여럿이면 사용자에게 고르게 한다. 없으면 사용자에게 중앙 저장소 주소를 받아 `~/wiki/<저장소 이름>`에 clone하고 `llm-wiki sync --pull-only --root <clone> --json`을 실행한다. 빈 저장소라면 `init --central`이 필요하다는 것을 알리고 사용자가 정하게 한다.
+4. 프로젝트 이름과 분류를 정한다. 이름은 사용자가 주지 않았으면 `WS`의 디렉터리 이름을 쓴다. clone의 `wiki.toml`에 같은 이름이 이미 있으면 다른 워크스페이스가 쓰는 프로젝트일 수 있으니 이어 쓸지 사용자에게 확인한다. 분류(`company`, `personal` 등)는 사용자에게 묻는다.
+5. 연결한다.
+
+```sh
+llm-wiki init --path WS --wiki CLONE --project NAME --category CATEGORY --json
+```
+
+6. 결과의 `next`가 `null`이 아니면 그 명령(`llm-wiki sync --json`)을 `WS`에서 실행해 새 프로젝트를 중앙 저장소에 올린다. `secret_detected`, `conflict` 같은 오류가 나면 멈추고 `recovery`를 보여 준다.
+7. 확인한다. `WS` 아래에서 `llm-wiki status --json`의 `current_project`가 `NAME`이고 `managed`가 모두 `current`인지, `llm-wiki brief`가 출력되는지 본다.
+8. 보고한다. 만들거나 고친 파일(`created`, `updated`), `roots.json`에서 바뀐 매핑(`previous`), `sync` 결과를 그대로 전한다. `AGENTS.md`가 이미 있었다면 마커 블록만 덧붙였고 나머지는 그대로라는 점, 워크스페이스에 남아 있는 로컬 `llm-wiki/` 기록은 건드리지 않았다는 점도 알린다. 워크스페이스 저장소에 지침 파일을 커밋할지는 사용자가 정하므로 커밋하지 않는다.
+
+설정은 머신마다 따로 한다. `roots.json`은 머신 로컬 파일이라 다른 머신에서는 3~7단계를 다시 해야 한다.
 
 ## 빠른 시작
 

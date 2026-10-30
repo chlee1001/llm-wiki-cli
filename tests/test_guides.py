@@ -56,6 +56,8 @@ class GuideTests(unittest.TestCase):
                 self.assertIn("roots.json", guide)
                 self.assertIn("llm-wiki init --path", guide)
                 self.assertIn("do not run `init`", guide)
+                self.assertIn("Unless the user asks you to set it up", guide)
+                self.assertIn("agent setup steps in the llm-wiki-cli README", guide)
 
     def test_session_start_pulls_then_briefs(self) -> None:
         for guide in self.guides:
@@ -114,6 +116,12 @@ class ReadmeTests(unittest.TestCase):
         section = self.text.split("## 후보 상태", 1)[1].split("\n## ", 1)[0]
         rows = set(re.findall(r"^\| `([a-z-]+)` \|", section, re.M))
         self.assertEqual(rows, set(PENDING) | set(DECIDED))
+
+    def test_agent_setup_steps_use_the_one_step_link(self) -> None:
+        section = self.text.split("## 에이전트에게 워크스페이스 설정 맡기기", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("llm-wiki init --path WS --wiki CLONE --project NAME --category CATEGORY --json", section)
+        for phrase in ("roots.json", "llm-wiki status --json", "`next`", "git+ssh", "--editable", "커밋하지 않는다"):
+            self.assertIn(phrase, section)
 
     def test_owner_steps_are_documented_not_automated(self) -> None:
         for phrase in ("deploy key", "roots.json", "init --central", "sync --pull-only", "merge=union"):
