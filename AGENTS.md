@@ -18,7 +18,7 @@ llm-wiki status --json
 llm-wiki search "authentication" --json
 ```
 
-If `llm-wiki` is not installed, or `status --json` fails with `No llm-wiki found`, a `roots.json` error, or an unregistered project, this workspace is not set up: tell the user and continue without the wiki. Setup is the user's step: they connect a workspace to a central clone with `llm-wiki init --path DIR --wiki CLONE --project NAME`; do not run `init` or `add-project`, and do not edit `roots.json` yourself.
+If `llm-wiki` is not installed, or `status --json` fails with `No llm-wiki found`, a `roots.json` error, or an unregistered project, this workspace is not set up: tell the user and continue without the wiki. Setup is the user's call: a workspace is connected to a central clone with `llm-wiki init --path DIR --wiki CLONE --project NAME`. Unless the user asks you to set it up, do not run `init` or `add-project`, and do not edit `roots.json` yourself; when they do ask, follow the agent setup steps in the llm-wiki-cli README.
 
 `llm-wiki status --json` also compares this workspace's llm-wiki files with what the installed CLI generates. If its `refresh` field is not null, tell the user they differ and give them that command; if the installed CLI may be older than the one that wrote them, they should update the CLI first. Report any `managed` file marked `invalid` or `unreadable` for a manual fix.
 
