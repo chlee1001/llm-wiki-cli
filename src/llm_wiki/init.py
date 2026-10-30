@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from .config import Wiki, WikiError, add_project, discover, discover_for, has_config, is_legacy_dir, is_wiki_dir_name, load_wiki_at, validate_project_name, wiki_dirs, write_config
+from .config import Wiki, WikiError, add_project, discover, has_config, set_category, validate_category, write_root, is_legacy_dir, is_wiki_dir_name, load_wiki_at, validate_project_name, wiki_dirs, write_config
 from .templates import GJC_FRONT_MATTER, SKILL_FRONT_MATTER, SKILL_NAME, agents_block, gjc_rule, gjc_skill, index, legacy_wiki_readme, wiki_readme
 
 BEGIN = "<!-- llm-wiki:begin -->"
@@ -182,16 +182,46 @@ def _write_managed(inspected: list[tuple[Managed, str, str | None, tuple[int, in
             updated.append(str(spec.path))
 
 
-def init_workspace(workspace: Path, include_agents: bool, include_gjc: bool) -> dict[str, object]:
-    """Write the agent guidance of a workspace that roots.json maps to a central wiki; no local wiki is made."""
-    wiki, project = discover_for(workspace, None)
+def _guidance(wiki: Wiki, workspace: Path, include_agents: bool, include_gjc: bool) -> list[tuple[Managed, str, str | None, tuple[int, int] | None]]:
     groups = ({"agents"} if include_agents else set()) | ({"gjc"} if include_gjc else set())
-    inspected = _inspect_writable(managed_files(wiki, workspace), groups, workspace)
+    return _inspect_writable(managed_files(wiki, workspace), groups, workspace)
+
+
+def init_workspace(workspace: Path, clone: Path, project: str, include_agents: bool, include_gjc: bool) -> dict[str, object]:
+    """Write the agent guidance of a workspace that roots.json maps to (clone, project); no local wiki is made."""
+    wiki = load_wiki_at(clone)
+    if project not in wiki.projects:
+        raise WikiError(f"등록되지 않은 프로젝트: {project}; add-project를 먼저 실행")
+    inspected = _guidance(wiki, workspace, include_agents, include_gjc)
     created: list[str] = []
     existing: list[str] = []
     updated: list[str] = []
     _write_managed(inspected, created, existing, updated)
     return {"root": str(workspace), "wiki": str(wiki.directory), "project": project, "created": created, "existing": existing, "updated": updated}
+
+
+def link_workspace(workspace: Path, clone: Path, project: str, category: str | None, include_agents: bool, include_gjc: bool) -> dict[str, object]:
+    """Set up a workspace against a central clone in one step: register the project, map it in roots.json, write guidance.
+
+    Everything is checked before the first write. Registering a project or changing its category edits the
+    clone, which other machines see only after ``llm-wiki sync``.
+    """
+    clone = clone.expanduser().resolve()
+    wiki = load_wiki_at(clone)
+    validate_project_name(project)
+    if category is not None:
+        validate_category(category)
+    _guidance(wiki, workspace, include_agents, include_gjc)
+    registered = project not in wiki.projects
+    changed = registered or (category is not None and wiki.category(project) != category)
+    if registered:
+        wiki, _ = register_project(wiki, project, None, category or "")
+    elif changed:
+        wiki = set_category(wiki, project, category)
+    previous = write_root(workspace, clone, project)
+    result = init_workspace(workspace, clone, project, include_agents, include_gjc)
+    result.update(registered=registered, previous=previous, next="llm-wiki sync --json" if changed else None)
+    return result
 
 
 def init_wiki(root: Path, mode: str | None, name: str | None, include_agents: bool, include_gjc: bool) -> dict[str, object]:

@@ -38,6 +38,24 @@ def guard_reasons() -> set[str]:
 
 class GuideTests(unittest.TestCase):
     guides = (agents_block("llm-wiki"), gjc_rule("llm-wiki"))
+    # Guidance written into a workspace that roots.json maps to a central clone.
+    mapped = (agents_block(None), gjc_rule(None), gjc_skill(None))
+
+    def test_mapped_guides_name_no_local_wiki_and_keep_every_step(self) -> None:
+        local = (*self.guides, gjc_skill("llm-wiki"))
+        for guide, original in zip(self.mapped, local):
+            with self.subTest(guide=guide[:60]):
+                self.assertNotIn("`llm-wiki/", guide)
+                self.assertIn("roots.json", guide)
+                self.assertEqual(commands_in(guide), commands_in(original))
+
+    def test_guides_say_setup_is_the_users_job(self) -> None:
+        for guide in (*self.guides, *self.mapped[:2]):
+            with self.subTest(guide=guide[:60]):
+                self.assertIn("No llm-wiki found", guide)
+                self.assertIn("roots.json", guide)
+                self.assertIn("llm-wiki init --path", guide)
+                self.assertIn("do not run `init`", guide)
 
     def test_session_start_pulls_then_briefs(self) -> None:
         for guide in self.guides:

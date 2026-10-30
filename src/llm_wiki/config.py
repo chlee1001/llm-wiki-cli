@@ -180,6 +180,30 @@ def read_roots() -> dict[Path, tuple[Path, str]]:
     return result
 
 
+def write_root(workspace: Path, clone: Path, project: str) -> dict[str, str] | None:
+    """Map workspace to (clone, project) in roots.json, keeping every other entry; return the entry it replaced."""
+    path = roots_path()
+    read_roots()  # refuse to rewrite a malformed file
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {"version": 1, "roots": {}}
+    # Reuse a key written another way (~/..., a symlinked path) so the file never maps one directory twice.
+    key = next((name for name in data["roots"] if Path(name).expanduser().resolve() == workspace), str(workspace))
+    previous = data["roots"].get(key)
+    data["roots"][key] = {"wiki": str(clone), "project": validate_project_name(project)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".roots-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        os.replace(temporary, path)
+    except BaseException:
+        os.unlink(temporary)
+        raise
+    return previous
+
+
 def mapped_workspace(cwd: Path) -> tuple[Path, Path, str] | None:
     """The roots.json entry covering cwd as (workspace directory, wiki clone, project); the longest prefix wins."""
     here = Path(os.path.normpath(cwd.expanduser().resolve()))

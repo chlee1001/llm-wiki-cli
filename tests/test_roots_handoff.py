@@ -293,6 +293,108 @@ class RootsTests(Base):
                 self.assertIn("roots.json", data["error"])
                 self.assertFalse((self.workspace / "AGENTS.md").exists())
 
+    def test_cli_init_links_a_new_workspace_in_one_step(self) -> None:
+        self.write_roots({str(self.base / "other"): {"wiki": str(self.clone), "project": "web"}})
+        code, data = self.run_cli("init", "--path", str(self.workspace), "--wiki", str(self.clone), "--project", "billing",
+                                  "--category", "company", "--json")
+        self.assertEqual(code, 0, data)
+        self.assertTrue(data["registered"])
+        self.assertIsNone(data["previous"])
+        self.assertEqual(data["next"], "llm-wiki sync --json")
+        roots = json.loads(self.roots_file.read_text(encoding="utf-8"))["roots"]
+        self.assertEqual(roots[str(self.workspace)], {"wiki": str(self.clone), "project": "billing"})
+        self.assertEqual(roots[str(self.base / "other")], {"wiki": str(self.clone), "project": "web"})
+        wiki = load_wiki_at(self.clone)
+        self.assertEqual(wiki.category("billing"), "company")
+        self.assertTrue((self.clone / "projects" / "billing" / "inbox" / "candidates").is_dir())
+        self.assertIn("billing", (self.clone / "index.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.workspace / "AGENTS.md").is_file())
+        self.assertTrue((self.workspace / ".gjc" / "skills" / "llm-wiki-wrap" / "SKILL.md").is_file())
+        self.assertFalse((self.workspace / "llm-wiki").exists())
+        with in_directory(self.workspace):
+            status = self.run_cli("status", "--json")[1]
+        self.assertEqual(status["current_project"], "billing")
+        self.assertEqual({entry["state"] for entry in status["managed"]}, {"current"})
+
+    def test_cli_init_link_is_idempotent(self) -> None:
+        argv = ("init", "--path", str(self.workspace), "--wiki", str(self.clone), "--project", "api", "--json")
+        first = self.run_cli(*argv)[1]
+        self.assertFalse(first["registered"])
+        self.assertIsNone(first["next"])
+        before = (snapshot(self.clone), self.roots_file.read_bytes(), snapshot(self.workspace))
+        code, again = self.run_cli(*argv)
+        self.assertEqual(code, 0)
+        self.assertEqual((again["created"], again["updated"]), ([], []))
+        self.assertEqual(again["previous"], {"wiki": str(self.clone), "project": "api"})
+        self.assertEqual((snapshot(self.clone), self.roots_file.read_bytes(), snapshot(self.workspace)), before)
+
+    def test_cli_init_link_sets_the_category_of_an_existing_project(self) -> None:
+        code, data = self.run_cli("init", "--path", str(self.workspace), "--wiki", str(self.clone), "--project", "api",
+                                  "--category", "personal", "--json")
+        self.assertEqual(code, 0)
+        self.assertFalse(data["registered"])
+        self.assertEqual(data["next"], "llm-wiki sync --json")
+        self.assertEqual(load_wiki_at(self.clone).category("api"), "personal")
+
+    def test_cli_init_link_remaps_and_reports_the_previous_target(self) -> None:
+        self.write_roots({str(self.workspace): {"wiki": str(self.clone), "project": "web"}})
+        code, data = self.run_cli("init", "--path", str(self.workspace), "--wiki", str(self.clone), "--project", "api", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(data["previous"], {"wiki": str(self.clone), "project": "web"})
+        self.assertEqual(discover_for(self.workspace, None)[1], "api")
+
+    def test_cli_init_link_replaces_a_tilde_key_for_the_same_directory(self) -> None:
+        mapped = self.home / "work" / "api"
+        mapped.mkdir(parents=True)
+        self.write_roots({"~/work/api": {"wiki": str(self.clone), "project": "web"}})
+        code, data = self.run_cli("init", "--path", str(mapped), "--wiki", str(self.clone), "--project", "api", "--json")
+        self.assertEqual(code, 0, data)
+        self.assertEqual(data["previous"], {"wiki": str(self.clone), "project": "web"})
+        roots = json.loads(self.roots_file.read_text(encoding="utf-8"))["roots"]
+        self.assertEqual(roots, {"~/work/api": {"wiki": str(self.clone), "project": "api"}})
+        self.assertEqual(discover_for(mapped, None)[1], "api")
+
+    def test_cli_init_link_refuses_bad_input_without_writing(self) -> None:
+        plain = self.base / "plain"
+        plain.mkdir()
+        before = snapshot(self.clone)
+        cases = {
+            "wiki without project": ("--wiki", str(self.clone)),
+            "project without wiki": ("--project", "api"),
+            "no wiki.toml": ("--wiki", str(plain), "--project", "api"),
+            "bad project name": ("--wiki", str(self.clone), "--project", "shared"),
+            "bad category": ("--wiki", str(self.clone), "--project", "new", "--category", "a\x01b"),
+            "mode": ("--wiki", str(self.clone), "--project", "api", "--mode", "single"),
+            "central": ("--wiki", str(self.clone), "--project", "api", "--central"),
+        }
+        for name, flags in cases.items():
+            with self.subTest(name=name):
+                code, data = self.run_cli("init", "--path", str(self.workspace), *flags, "--json")
+                self.assertNotEqual(code, 0)
+                self.assertIn("error", data)
+                self.assertFalse(self.roots_file.exists())
+                self.assertEqual(list(self.workspace.iterdir()), [])
+                self.assertEqual(snapshot(self.clone), before)
+
+    def test_cli_init_link_refuses_invalid_guidance_before_any_write(self) -> None:
+        (self.workspace / "AGENTS.md").write_text("<!-- llm-wiki:begin -->\nno end\n", encoding="utf-8")
+        before = snapshot(self.clone)
+        code, data = self.run_cli("init", "--path", str(self.workspace), "--wiki", str(self.clone), "--project", "new", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("AGENTS.md (invalid)", data["error"])
+        self.assertFalse(self.roots_file.exists())
+        self.assertEqual(snapshot(self.clone), before)
+
+    def test_mapped_init_uses_the_mapping_even_when_llm_wiki_root_is_set(self) -> None:
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        init_central(elsewhere, "elsewhere")
+        self.write_roots({str(self.workspace): {"wiki": str(self.clone), "project": "api"}})
+        with patch.dict(os.environ, {"LLM_WIKI_ROOT": str(elsewhere)}):
+            code, data = self.run_cli("init", "--path", str(self.workspace), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(data["wiki"], str(self.clone))
+
     def test_cli_unmapped_directory_and_no_wiki_is_an_error(self) -> None:
         stray = self.base / "stray"
         stray.mkdir()

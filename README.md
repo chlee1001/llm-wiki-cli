@@ -41,7 +41,7 @@ llm-wiki promote --title "확인 필요" --body "근거를 더 확인한다"
 
 | 명령 | 설명 |
 | --- | --- |
-| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. `--central`은 중앙 저장소 clone 자체를 위키로 만든다([중앙 저장소와 여러 머신](#중앙-저장소와-여러-머신)). `--mode`, `--no-agents`, `--no-gjc`와 함께 쓰면 거부한다. 결과의 `created`는 새로 만든 파일, `updated`는 이미 있던 관리 파일 중 마커 블록 갱신으로 바이트가 바뀐 파일이다. |
+| `init` | 레이아웃을 만들고 `--mode single` 또는 `--mode umbrella`를 설정한다. 새 위키에서 `--mode`를 생략하면 `single`이다. `--name`, `--path`, `--no-agents`, `--no-gjc`를 쓸 수 있다. `--central`은 중앙 저장소 clone 자체를 위키로 만든다([중앙 저장소와 여러 머신](#중앙-저장소와-여러-머신)). `--mode`, `--no-agents`, `--no-gjc`와 함께 쓰면 거부한다. `--wiki CLONE --project NAME [--category TEXT]`는 `--path` 워크스페이스를 중앙 위키에 연결한다([워크스페이스 연결](#워크스페이스-연결)). 결과의 `created`는 새로 만든 파일, `updated`는 이미 있던 관리 파일 중 마커 블록 갱신으로 바이트가 바뀐 파일이다. |
 | `add-project NAME` | 프로젝트와 프로젝트 전용 디렉터리를 등록한다. `--path PATH`로 프로젝트 경로를, `--category TEXT`로 분류를 정한다. |
 | `category PROJECT [VALUE]` | 프로젝트 분류를 보여 주거나 `VALUE`로 바꾼다. 빈 문자열이면 분류가 없다. |
 | `status` | 현재 위키, 프로젝트별 Markdown 수와 분류(`category`), QMD 설치 여부와 관리 파일 상태(`managed`), 갱신 명령(`refresh`)을 보여 준다. |
@@ -112,11 +112,32 @@ llm-wiki sync --pull-only --root ~/wiki/my-llm-wiki
 
 경로는 절대 경로나 `~`로 시작해야 한다. 작업 디렉터리 아래 어디에서 실행해도 가장 긴 접두 경로가 고른 매핑을 쓴다. 등록하지 않은 `project`를 가리키면 `add-project`를 먼저 실행하라는 오류를 낸다.
 
-매핑한 작업 디렉터리에는 에이전트 지침만 둔다. `roots.json` 키와 같은 경로로 `init --path`를 실행하면 그 디렉터리에 `AGENTS.md`, `.gjc/rules/llm-wiki.md`, `.gjc/skills/llm-wiki-wrap/SKILL.md`만 만들거나 갱신하고, 로컬 `llm-wiki/` 위키는 만들지 않는다. 남아 있는 로컬 `llm-wiki/`도 건드리지 않는다. 지침은 위키 경로 대신 `roots.json` 매핑을 가리키므로 머신마다 clone 경로가 달라도 같은 내용이 된다. 이때 `--mode`와 `--name`은 거부한다. 매핑한 디렉터리 아래에서 `status --json`을 실행하면 `root`는 clone 경로, `workspace`는 매핑한 디렉터리이고, `managed`는 그 작업 디렉터리의 지침 파일 세 개를 비교한다.
+### 워크스페이스 연결
+
+새 워크스페이스는 명령 하나로 중앙 위키에 연결한다. 머신마다 워크스페이스마다 한 번 실행한다.
+
+```sh
+llm-wiki init --path ~/work/api --wiki ~/wiki/my-llm-wiki --project api --category company
+llm-wiki sync --root ~/wiki/my-llm-wiki
+```
+
+`init --path DIR --wiki CLONE --project NAME`은 다음을 한다. 쓰기 전에 clone의 `wiki.toml`, 프로젝트 이름, 분류, 워크스페이스의 지침 파일 마커를 모두 확인하고, 하나라도 문제가 있으면 아무것도 쓰지 않는다.
+
+1. `NAME`이 clone에 없으면 `add-project`처럼 등록한다. `--category`를 주면 새 프로젝트에 붙이고, 이미 있는 프로젝트라면 그 값으로 바꾼다.
+2. `roots.json`에 `DIR` → (`CLONE`, `NAME`) 항목을 쓴다. 다른 항목은 그대로 두고, `DIR`에 이미 다른 매핑이 있으면 바꾼 뒤 이전 값을 결과의 `previous`로 알려 준다.
+3. `DIR`에 `AGENTS.md`, `.gjc/rules/llm-wiki.md`, `.gjc/skills/llm-wiki-wrap/SKILL.md`를 만들거나 마커 블록만 갱신한다. 로컬 `llm-wiki/` 위키는 만들지 않고, 남아 있는 로컬 `llm-wiki/`도 건드리지 않는다. `--no-agents`, `--no-gjc`로 묶음을 건너뛸 수 있다.
+
+1번에서 clone이 바뀌면 결과의 `next`가 `llm-wiki sync --json`이다. 다른 머신이 새 프로젝트를 보려면 이 `sync`가 필요하다. 이미 연결된 워크스페이스에서 같은 명령을 다시 실행하면 아무것도 바뀌지 않는다. `--wiki`는 `--central`, `--mode`, `--name`과 함께 쓸 수 없다.
+
+지침은 위키 경로 대신 `roots.json` 매핑을 가리키므로 머신마다 clone 경로가 달라도 같은 내용이 된다. 에이전트에게는 설정을 직접 하지 말라고 안내한다. `status --json`이 `No llm-wiki found`나 `roots.json` 오류를 내면 사용자에게 알리고 위키 없이 작업을 이어 가며, `init`·`add-project`를 실행하거나 `roots.json`을 고치지 않는다.
+
+이미 매핑한 디렉터리에서는 `init --path DIR`만으로 지침을 갱신한다. 이때 `--mode`와 `--name`은 거부한다. 매핑한 디렉터리 아래에서 `status --json`을 실행하면 `root`는 clone 경로, `workspace`는 매핑한 디렉터리이고, `managed`는 그 작업 디렉터리의 지침 파일 세 개를 비교한다.
 
 ```sh
 llm-wiki init --path ~/work/api
 ```
+
+여러 저장소를 담은 상위 폴더라면 상위 폴더와 하위 저장소를 각각 연결한다. 가장 긴 접두 경로가 이기므로 하위 저장소 안에서는 그 프로젝트로 기록된다. 지침은 에이전트가 읽는 위치에 한 벌만 두면 되므로 하위 저장소에는 `--no-agents --no-gjc`를 붙여도 된다.
 
 `sync`는 다음 순서로 동작한다.
 
@@ -167,7 +188,7 @@ llm-wiki search 캐시 --category backend
 1. GitHub에 private 저장소 `my-llm-wiki`를 만든다. 공개 저장소로 만들었다면 아무것도 올리기 전에 private으로 바꾼다.
 2. 머신(M3, VM)마다 deploy key를 만들어 쓰기 권한으로 등록하고, `~/.ssh/config`에 호스트 별칭(`github-llm-wiki`)과 `IdentityFile`을 적는다. 한 저장소에 같은 deploy key를 두 번 등록할 수 없으므로 머신마다 키를 따로 만든다.
 3. 위 순서대로 첫 머신에서 `init --central`과 `add-project`, `sync`를 실행하고 다른 머신에서 `sync --pull-only`를 실행한다. 두 머신에 `roots.json`을 둔다.
-4. 이 저장소 안의 `llm-wiki/` 기록을 `my-llm-wiki`로 옮긴다. `my-llm-wiki`에서 `add-project llm-wiki-cli --category personal`을 실행한 뒤 `llm-wiki/projects/llm-wiki-cli/`의 `sessions/`, `inbox/`, `knowledge/` 파일을 같은 경로로 복사한다(`cp -Rpn`). 공유 영역 파일도 `shared/`로 복사한다. 원래 `log.md` 항목은 옮기지 않는다. 복사한 뒤 원본과 사본의 파일 수와 `shasum -a 256` 값을 비교하고, `sync`가 성공하고 다른 머신의 `sync --pull-only`에서도 같은 파일이 보이는지 확인한다. 그다음에만 원래 `llm-wiki/`를 지우고, 이 저장소 작업 디렉터리를 `my-llm-wiki`의 `llm-wiki-cli` 프로젝트로 `roots.json`에 매핑한 뒤 `llm-wiki init --path <작업 디렉터리>`로 지침을 갱신한다.
+4. 이 저장소 안의 `llm-wiki/` 기록을 `my-llm-wiki`로 옮긴다. `my-llm-wiki`에서 `add-project llm-wiki-cli --category personal`을 실행한 뒤 `llm-wiki/projects/llm-wiki-cli/`의 `sessions/`, `inbox/`, `knowledge/` 파일을 같은 경로로 복사한다(`cp -Rpn`). 공유 영역 파일도 `shared/`로 복사한다. 원래 `log.md` 항목은 옮기지 않는다. 복사한 뒤 원본과 사본의 파일 수와 `shasum -a 256` 값을 비교하고, `sync`가 성공하고 다른 머신의 `sync --pull-only`에서도 같은 파일이 보이는지 확인한다. 그다음에만 원래 `llm-wiki/`를 지우고, `llm-wiki init --path <작업 디렉터리> --wiki <clone> --project llm-wiki-cli`로 이 저장소 작업 디렉터리를 연결한다.
 5. 왕복 확인: M3에서 `wrap --handoff` 후 `sync`, VM에서 `sync --pull-only`와 `brief`로 인수인계가 보이는지, `take` 후 `sync`, M3에서 `sync --pull-only` 뒤 그 인수인계가 열린 목록에서 빠졌는지 확인한다. VM에서도 `wrap` 후 `sync`해 양쪽 `log.md`에 두 머신의 항목이 모두 남는지 본다.
 6. 중단 확인: 비밀값이 든 파일을 하나 만들어 `sync`가 `secret_detected`로 멈추고 원격이 그대로인지 확인한 뒤 그 파일을 지운다.
 

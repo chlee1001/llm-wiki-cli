@@ -12,7 +12,7 @@ from .brief import DEFAULT_LIMIT, brief
 from .config import WikiError, current_project, discover_for, has_config, mapped_workspace, require_writable, set_category, sync_directory
 from .curate import decide, pending, review
 from .handoff import take
-from .init import init_central, init_wiki, init_workspace, managed_status, refresh_command, register_project
+from .init import init_central, init_wiki, init_workspace, link_workspace, managed_status, refresh_command, register_project
 from .qmd import qmd_sync
 from .records import promote, wrap
 from .search import search
@@ -52,6 +52,9 @@ def parser() -> ArgumentParser:
     init.add_argument("--no-agents", action="store_true")
     init.add_argument("--no-gjc", action="store_true")
     init.add_argument("--central", action="store_true", help="Initialize --path itself as a central wiki clone (no managed files).")
+    init.add_argument("--wiki", help="Central wiki clone to map --path to in roots.json (with --project).")
+    init.add_argument("--project", help="Project in --wiki for this workspace; registered when missing.")
+    init.add_argument("--category", help="Category for --project in --wiki.")
 
     add = subcommands.add_parser("add-project", help="Register an umbrella project")
     _common(add)
@@ -210,6 +213,12 @@ def _normalize_input(args: argparse.Namespace) -> None:
     elif args.command == "init":
         if args.central and (args.no_agents or args.no_gjc or args.mode is not None):
             raise InputError("--central cannot be combined with --mode, --no-agents, or --no-gjc")
+        if (args.wiki is None) != (args.project is None):
+            raise InputError("--wiki and --project must be used together")
+        if args.category is not None and args.wiki is None:
+            raise InputError("--category needs --wiki and --project")
+        if args.wiki is not None and (args.central or args.mode is not None or args.name is not None):
+            raise InputError("--wiki cannot be combined with --central, --mode, or --name")
     elif args.command == "promote":
         fields = ("title", "body", "source", "project", "shared")
         if args.input_json is not None:
@@ -251,11 +260,15 @@ def execute(args: argparse.Namespace) -> tuple[int, Any]:
             result = init_central(Path(args.path), args.name)
             return 0, result
         path = Path(args.path).expanduser().resolve()
+        if args.wiki is not None:
+            if not path.is_dir():
+                raise WikiError(f"Workspace directory does not exist: {path}.")
+            return 0, link_workspace(path, Path(args.wiki), args.project, args.category, not args.no_agents, not args.no_gjc)
         mapping = mapped_workspace(path)
         if mapping is not None and mapping[0] == path:
             if args.mode is not None or args.name is not None:
                 raise WikiError(f"{path} is mapped in roots.json to {mapping[1]}; --mode and --name do not apply.")
-            return 0, init_workspace(path, not args.no_agents, not args.no_gjc)
+            return 0, init_workspace(path, mapping[1], mapping[2], not args.no_agents, not args.no_gjc)
         result = init_wiki(path, args.mode, args.name, not args.no_agents, not args.no_gjc)
         return 0, result
     if args.command == "sync":
