@@ -32,7 +32,7 @@ llm-wiki wrap --input-json - --json <<'JSON'
 JSON
 ```
 
-Wrap runs only when an agent runs it; there is no automatic hook and no duplicate check, so record each session once. In `verification`, give each command actually run, its result, and where the evidence is. Keep observed facts apart from guesses in every field, including `handoff`; put unverified claims in `candidate` or `not_tested`. Saving the record does not clean up temp files, containers, or servers: report them as removed only after checking.
+Wrap runs only when an agent runs it; there is no automatic hook and no duplicate check, so record each session once. Only `candidate` is an array of strings; every other wrap field is a string, so join list-like content such as `verification` and `not_tested` with newlines. In `verification`, give each command actually run, its result, and where the evidence is. Keep observed facts apart from guesses in every field, including `handoff`; put unverified claims in `candidate` or `not_tested`. Saving the record does not clean up temp files, containers, or servers: report them as removed only after checking.
 
 After `wrap`, publish the record. `sync` commits every change in the wiki once, rebases onto the remote, and pushes. On `conflict`, `secret_detected`, `no_identity`, or `push_rejected`, stop and show the user the error and its `recovery` steps; never resolve conflicts, rewrite history, or edit the wiki by hand to get past them. Treat a `guard` error with reason `rebase_in_progress`, `missing_directory`, or `no_git` the same way; with reason `toplevel` or `no_remote`, skip this step.
 

@@ -181,19 +181,36 @@ def _json_fields(args: argparse.Namespace, fields: tuple[str, ...]) -> None:
     data = _read_json_input(args.input_json)
     if not set(data).issubset(fields):
         raise InputError("JSON input contains unknown fields")
+    wrong: dict[str, list[tuple[str, str]]] = {}
     for field in fields:
         if field not in data:
             continue
         value = data[field]
         if field in ("candidate", "source"):
-            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                raise InputError(f"JSON field {field} must be a list of strings")
+            expected = "an array of strings"
+            valid = isinstance(value, list) and all(isinstance(item, str) for item in value)
         elif field == "shared":
-            if type(value) is not bool:
-                raise InputError("JSON field shared must be a boolean")
-        elif not isinstance(value, str):
-            raise InputError(f"JSON field {field} must be a string")
-        setattr(args, field, value)
+            expected, valid = "a boolean", type(value) is bool
+        else:
+            expected, valid = "a string", isinstance(value, str)
+        if valid:
+            setattr(args, field, value)
+        else:
+            wrong.setdefault(expected, []).append((field, _json_type(value)))
+    if wrong:
+        raise InputError("; ".join(_wrong_fields(expected, found) for expected, found in wrong.items()))
+
+
+def _json_type(value: Any) -> str:
+    return {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(value), "number")
+
+
+def _wrong_fields(expected: str, found: list[tuple[str, str]]) -> str:
+    names = ", ".join(field for field, _ in found)
+    got = ", ".join(dict.fromkeys(kind for _, kind in found))
+    noun = "field" if len(found) == 1 else "fields"
+    verb = "must be" if len(found) == 1 else "must each be"
+    return f"JSON {noun} {names} {verb} {expected} (got {got})"
 
 
 def _normalize_input(args: argparse.Namespace) -> None:
