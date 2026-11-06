@@ -126,7 +126,7 @@ class ReadmeTests(unittest.TestCase):
     def test_agent_setup_steps_use_the_one_step_link(self) -> None:
         section = self.text.split("## 에이전트에게 워크스페이스 설정 맡기기", 1)[1].split("\n## ", 1)[0]
         self.assertIn("llm-wiki init --path WS --wiki CLONE --project NAME --category CATEGORY --json", section)
-        for phrase in ("roots.json", "llm-wiki status --json", "`next`", "git+ssh", "--editable", "커밋하지 않는다"):
+        for phrase in ("roots.json", "llm-wiki status --json", "`next`", "git+https", "--editable", "커밋하지 않는다"):
             self.assertIn(phrase, section)
 
     def test_owner_steps_are_documented_not_automated(self) -> None:

@@ -7,21 +7,21 @@
 ## 설치
 
 ```sh
-uv tool install --reinstall git+ssh://git@github.com/chlee1001/llm-wiki-cli.git
+uv tool install --reinstall git+https://github.com/chlee1001/llm-wiki-cli.git
 # 로컬 clone에서 고친 소스를 바로 쓰려면
 uv tool install --reinstall --editable /path/to/llm-wiki-cli
 # 또는
 pipx install /path/to/llm-wiki-cli
 ```
 
-Python 3.11 이상이 필요하다. GitHub 저장소가 private이므로 GitHub 주소로 설치할 때는 그 저장소를 읽을 수 있는 SSH 키가 있어야 한다.
+Python 3.11 이상이 필요하다. 공개 저장소이므로 SSH 키 없이 HTTPS 주소(`git+https://github.com/chlee1001/llm-wiki-cli.git`)로도 설치할 수 있다.
 
 ## 에이전트에게 워크스페이스 설정 맡기기
 
 다른 워크스페이스의 에이전트 세션에 이 저장소의 경로나 GitHub 주소를 주고 "이 워크스페이스에 llm-wiki를 설정해 줘"라고 하면, 에이전트는 이 절을 따른다. 사용자가 설정을 요청한 경우에만 진행한다. 결정이 필요한 값(중앙 저장소 주소, 분류)은 추측하지 않고 묻는다. `WS`는 설정할 워크스페이스의 절대 경로다.
 
 1. 이미 설정됐는지 본다. `WS`에서 `llm-wiki status --json`이 성공하고 `workspace`가 `WS`이며 `managed`가 모두 `current`이면 할 일이 없다. 그 결과만 보고하고 끝낸다.
-2. CLI를 확인한다. `llm-wiki init --help`에 `--wiki`가 없거나 `llm-wiki`가 없으면 위 설치 절의 명령으로 설치한다. 받은 것이 로컬 경로면 `--editable` 명령을, GitHub 주소면 `git+ssh` 명령을 쓴다. 설치 뒤 `llm-wiki init --help`에 `--wiki`가 있는지 다시 확인한다.
+2. CLI를 확인한다. `llm-wiki init --help`에 `--wiki`가 없거나 `llm-wiki`가 없으면 위 설치 절의 명령으로 설치한다. 받은 것이 로컬 경로면 `--editable` 명령을, GitHub 주소면 `git+https` 명령을 쓴다. 설치 뒤 `llm-wiki init --help`에 `--wiki`가 있는지 다시 확인한다.
 3. 중앙 위키 clone을 정한다. `~/.config/llm-wiki/roots.json`(`XDG_CONFIG_HOME`이 있으면 그 아래)에 이미 있는 `wiki` 경로가 하나면 그것을 쓴다. 여럿이면 사용자에게 고르게 한다. 없으면 사용자에게 중앙 저장소 주소를 받아 `~/wiki/<저장소 이름>`에 clone하고 `llm-wiki sync --pull-only --root <clone> --json`을 실행한다. 빈 저장소라면 `init --central`이 필요하다는 것을 알리고 사용자가 정하게 한다.
 4. 프로젝트 이름과 분류를 정한다. 이름은 사용자가 주지 않았으면 `WS`의 디렉터리 이름을 쓴다. clone의 `wiki.toml`에 같은 이름이 이미 있으면 다른 워크스페이스가 쓰는 프로젝트일 수 있으니 이어 쓸지 사용자에게 확인한다. 분류(`company`, `personal` 등)는 사용자에게 묻는다.
 5. 연결한다.
@@ -105,6 +105,8 @@ JSON
 비밀값 가리기는 정규식 기반 휴리스틱이다. `password=값`, `"token": "값"`처럼 키 뒤에 오는 값은 한 줄 안에서 가리고, 따옴표 안의 백슬래시는 이스케이프로 본다. 그래서 `'abc\'`처럼 백슬래시로 끝나는 값은 줄 끝까지 가린다. 닫히지 않은 따옴표도 줄 끝까지 가리므로 `"PASSWORD='x'" -e "USER=bob"`처럼 따옴표가 겹치면 뒤쪽 내용까지 가려질 수 있다. 구분자는 `=`, `:`, `:=`, `=>`를 인식하고, `SECRET_KEY`나 `client_secret`처럼 키 이름에 앞뒤 글자가 붙어도 비밀 키로 본다. 이 때문에 `password_hint`, `secretary` 같은 키의 값도 가려진다. `<password>값</password>` 같은 태그, 줄 중간의 `Authorization: Basic`과 `Cookie:` 헤더도 가린다. `Cookie` 헤더는 `curl -H "Cookie: ..."`처럼 따옴표 인자 안에 있으면 닫는 따옴표까지 가린다. 다만 닫는 따옴표 바로 뒤가 공백, 구분 기호(`,;:)]}`), 줄 끝 중 하나가 아니면(`"Cookie: a=b"tail`처럼 글자가 붙으면) 줄 끝까지 가린다. `"Cookie": "..."` 같은 JSON 키를 포함한 나머지 경우에도 줄 끝까지 가린다. `mysid=값`, `xsessionid=값`, `x-session-id = 값`처럼 이름에 `session`이 들어가거나 `sid`로 끝나는 키의 값은 `=` 앞뒤에 공백이 있어도 토큰으로 가린다. 그래서 `ssid=`, `possession=` 값도 가려진다. `session = requests.Session()` 같은 코드 줄도 가려지므로, 이런 줄을 직접 적은 문서는 sync가 `secret_detected`로 멈춘다. 값에 섞인 짝 없는 따옴표는 줄 끝까지 가린다. 다만 따옴표 뒤에 남은 줄이 256자보다 짧고 따옴표 바로 뒤에 공백이나 구분 기호가 오면, `password=x",y next`의 `x",y`처럼 그다음 공백까지만 가린다. 이때도 `password=x",y'z next`처럼 그 공백 전에 따옴표가 하나 더 나오면 줄 끝까지 가린다. 그 밖에 `redis://:pw@host`처럼 사용자 이름이 빈 URL 인증 정보도 가린다. `-----BEGIN ... PRIVATE KEY-----` 블록만 여러 줄을 가리고, 키·값, 태그, 인증 헤더(`Bearer`, `Authorization: Basic`, `Cookie`) 가리기는 줄 단위다. 키 뒤 값이 다음 줄에서 시작하거나(`password:` 다음 줄, YAML 블록 `password: |`) 태그 값이 여러 줄이면 가리지 못하므로 기록 전에 직접 지운다. CRLF 줄 끝은 LF와 같게 보고, 줄 중간의 CR 하나는 공백으로 본다. `wrap --candidate` 문자열은 한 줄로 합친 제목과 원래 줄을 지킨 본문에 함께 들어가므로, 키와 값이 줄바꿈으로 갈라져 있으면 제목에서만 가려지고 본문에는 값이 남는다. `--agent`, `--decided-by`, `--reason`처럼 한 줄로 저장하는 값은 줄을 먼저 합치고 제어 문자를 공백으로 바꾼 뒤 가린다.
 
 ## 중앙 저장소와 여러 머신
+
+이 절과 아래 "owner 작업" 절은 작성자(owner)가 쓰는 구성을 예시로 적은 것이다. 위키 저장소 이름과 머신 수, 접근 방식은 각자 환경에 맞게 바꿔 쓰면 된다.
 
 owner의 GitHub private 저장소 하나(`my-llm-wiki`)를 위키로 쓴다. 회사 프로젝트와 개인 프로젝트는 같은 위키에 두고 `category`(`company`, `personal`)로 나눈다. 저장소 루트가 곧 위키 디렉터리이고 `wiki.toml`이 루트에 있다. 접근은 이 저장소에 등록한 deploy key로 한다. 저장소 생성과 키 등록은 owner가 직접 한다. 이 도구는 GitHub 설정을 바꾸지 않는다.
 

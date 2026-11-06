@@ -9,7 +9,7 @@ description = "Local Markdown wiki CLI for LLM agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "rudy" }]
+authors = [{ name = "Chaehyeon Lee" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
