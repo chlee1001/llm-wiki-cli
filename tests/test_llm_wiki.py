@@ -312,7 +312,11 @@ class LlmWikiTests(unittest.TestCase):
             ('{"topic":"topic","task":"task","completed":"done","unknown":"secret-value"}', "unknown"),
             ('{"topic":"first","topic":"secret-value","task":"task","completed":"done"}', "duplicate"),
             ('{"topic":true,"task":"task","completed":"done"}', "topic must be a string"),
-            ('{"topic":"topic","task":"task","completed":"done","candidate":["ok",false]}', "candidate must be a list"),
+            ('{"topic":"topic","task":"task","completed":"done","candidate":["ok",false]}', "candidate must be an array of strings"),
+            (
+                '{"topic":"t","task":"t","completed":"d","verification":["x"],"not_tested":[],"handoff":1,"candidate":"c"}',
+                "JSON fields verification, handoff, not_tested must each be a string (got array, number); JSON field candidate must be an array of strings (got string)",
+            ),
         )
         for payload, message in cases:
             with self.subTest(message=message):

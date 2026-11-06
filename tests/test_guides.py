@@ -66,6 +66,12 @@ class GuideTests(unittest.TestCase):
             self.assertGreater(start, pull)
             self.assertIn("`guard`", guide)
 
+    def test_guides_state_wrap_field_types(self) -> None:
+        for guide in (*self.guides, *self.mapped, gjc_skill("llm-wiki")):
+            with self.subTest(guide=guide[:60]):
+                self.assertIn("Only `candidate` is an array of strings", guide)
+                self.assertIn("`not_tested`", guide)
+
     def test_session_end_wraps_then_syncs(self) -> None:
         for guide in (*self.guides, gjc_skill("llm-wiki")):
             wrap = guide.find("llm-wiki wrap --input-json - --json")

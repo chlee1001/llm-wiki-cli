@@ -125,6 +125,7 @@ RECORD_READING = (
 
 RECORD_WRITING = (
     "Wrap runs only when an agent runs it; there is no automatic hook and no duplicate check, so record each session once. "
+    "Only `candidate` is an array of strings; every other wrap field is a string, so join list-like content such as `verification` and `not_tested` with newlines. "
     "In `verification`, give each command actually run, its result, and where the evidence is. "
     "Keep observed facts apart from guesses in every field, including `handoff`; put unverified claims in `candidate` or `not_tested`. "
     "Saving the record does not clean up temp files, containers, or servers: report them as removed only after checking."
@@ -246,6 +247,7 @@ llm-wiki sync --json
 
 ## Rules
 
+- Only `candidate` is an array of strings; every other field is a string. Join list-like content such as `verification` and `not_tested` with newlines.
 - Never record secrets, tokens, passwords, or personal data. Summarize instead of pasting raw logs.
 - In `verification`, name each command that actually ran, its result, and where the evidence is (a file, test name, or output location). Do not write "verified" without the command.
 - Keep observed facts apart from inferences and unverified items in every field, including `handoff`. Do not restate a candidate as fact in `handoff` or `completed`.
