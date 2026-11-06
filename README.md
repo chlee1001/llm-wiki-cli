@@ -36,6 +36,8 @@ llm-wiki init --path WS --wiki CLONE --project NAME --category CATEGORY --json
 
 설정은 머신마다 따로 한다. `roots.json`은 머신 로컬 파일이라 다른 머신에서는 3~7단계를 다시 해야 한다.
 
+매번 저장소 경로를 주지 않고 "llm-wiki 셋팅"만 말하고 싶으면 `skills/llm-wiki-setup/`을 에이전트의 스킬 폴더(예: `~/.agents/skills/`)에 링크한다. 이 스킬은 위 절을 읽으라고 안내할 뿐 절차를 따로 들지 않는다.
+
 ## 빠른 시작
 
 한 저장소에는 `single` 모드를 쓴다.
