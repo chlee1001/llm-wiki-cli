@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Wiki, WikiError, require_writable
+from .history import handoff_threads
 from .records import TMP_DIR, _clean_single, create_exclusive, slug
 from .sync import require_no_rebase
 
@@ -84,15 +85,36 @@ def take(wiki: Wiki, project: str | None, handoff_id: str, agent: str, now: date
     return taken
 
 
-def scan_handoffs(directory: Path, wiki_directory: Path) -> dict[str, list[dict[str, Any]]]:
-    """List open and taken handoffs in one handoffs directory, newest first.
+def _session(source: Path) -> str | None:
+    """The ``session:`` value render_handoff wrote; None when the file cannot be read that way."""
+    try:
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in lines[1:] if lines[:1] == ["---"] else []:
+        if line == "---":
+            break
+        if line.startswith("session: "):
+            try:
+                value = json.loads(line[len("session: ") :])
+            except json.JSONDecodeError:
+                return None
+            return value if isinstance(value, str) else None
+    return None
+
+
+def scan_handoffs(directory: Path, wiki_directory: Path, threads: dict[str, dict] | None = None) -> dict[str, list[dict[str, Any]]]:
+    """List open, taken and superseded handoffs in one handoffs directory, newest first.
 
     ``duplicate_take`` marks a handoff that more than one agent took, which only sync can reveal.
+    A handoff whose session a history record follows with a later wrap is superseded; ``threads``
+    comes from ``history.handoff_threads``.
     """
     open_items: list[dict[str, Any]] = []
     taken_items: list[dict[str, Any]] = []
+    superseded_items: list[dict[str, Any]] = []
     if not directory.is_dir():
-        return {"open": open_items, "taken": taken_items}
+        return {"open": open_items, "taken": taken_items, "superseded": superseded_items}
     for source in sorted(directory.glob("*.md"), reverse=True):
         handoff_id = source.stem
         agents = [marker.name[len(handoff_id) + len(".taken.") :].rsplit(".", 1)[0] for marker in sorted(directory.glob(f"{handoff_id}.taken.*"))]
@@ -102,10 +124,18 @@ def scan_handoffs(directory: Path, wiki_directory: Path) -> dict[str, list[dict[
             entry["duplicate_take"] = len(agents) > 1
             taken_items.append(entry)
         else:
-            open_items.append(entry)
-    return {"open": open_items, "taken": taken_items}
+            session = _session(source) if threads else None
+            # history validated each wrap path; the stem check keeps a copied or edited handoff from borrowing another thread.
+            thread = threads.get(session) if session and Path(session).name == source.name else None
+            if thread and thread["by"] is not None:
+                superseded_items.append({**entry, "record_id": thread["record_id"], "by": thread["by"]})
+            else:
+                if thread:
+                    entry["history"] = {"record_id": thread["record_id"], "work_status": thread["work_status"]}
+                open_items.append(entry)
+    return {"open": open_items, "taken": taken_items, "superseded": superseded_items}
 
 
 def handoff_state(wiki: Wiki, project: str) -> dict[str, list[dict[str, Any]]]:
-    """List open and taken handoffs of a project, newest first."""
-    return scan_handoffs(handoffs_dir(wiki, project), wiki.directory)
+    """List open, taken and superseded handoffs of a project, newest first."""
+    return scan_handoffs(handoffs_dir(wiki, project), wiki.directory, handoff_threads(wiki, project))

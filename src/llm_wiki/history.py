@@ -342,6 +342,18 @@ def _entries(wiki: Wiki, extra: dict | None = None, before: str | None = None, t
     return sorted(entries, key=lambda e: (e[0], e[3]["date"], e[3]["id"]))
 
 
+def handoff_threads(wiki: Wiki, project: str | None) -> dict[str, dict]:
+    threads: dict[str, dict] = {}
+    for _, _, _, record in _entries(wiki, project=project):
+        wraps = sorted({source["wrap"] for source in record.get("sources", []) if "wrap" in source}, key=lambda wrap: (Path(wrap).name, wrap))
+        for index, wrap in enumerate(wraps):
+            by = wraps[index + 1] if index + 1 < len(wraps) else None
+            previous = threads.get(wrap)
+            if previous is None or previous["by"] is not None:
+                threads[wrap] = {"record_id": record["id"], "work_status": record["work_status"], "by": by}
+    return threads
+
+
 def _calculate(entries: list[tuple[str, str, str, dict]], before: str | None, through: str | None) -> dict:
     open_work = {}
     decisions = {}
