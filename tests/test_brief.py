@@ -15,6 +15,7 @@ from llm_wiki import cli
 from llm_wiki.brief import DEFAULT_LIMIT, brief
 from llm_wiki.config import load_wiki_at
 from llm_wiki.handoff import take
+from llm_wiki.history import ingest
 from llm_wiki.init import init_central, register_project
 from llm_wiki.records import promote
 
@@ -109,6 +110,18 @@ body {index}
 
 
 class BriefContentTests(BriefCase):
+    def test_in_progress_history_shows_open_only(self) -> None:
+        records = []
+        for i in range(6):
+            records.append({"id": f"task-{i}", "project": "api", "date": "2026-11-02", "title": f"Task {i}", "summary": "work", "work_status": "done" if i == 5 else "in-progress", "carry_key": f"task-{i}", "evidence": "inferred", "sources": [{"agent": "gjc", "session": "abc", "date": "2026-11-02"}]})
+        ingest(self.wiki, {"schema": "work-history/v2", "week": "2026-W45", "period": {"start": "2026-11-02", "end": "2026-11-08"}, "extraction": {"bundle_sha256": "a" * 64, "skill": "weekly-extract@1", "model": "test"}, "records": records})
+        result = brief(self.wiki, "api")
+        self.assertEqual(len(result["sections"]["history"]["items"]), 5)
+        self.assertNotIn("Task 5", result["text"])
+        compact = brief(self.wiki, "api", 2048)
+        self.assertLessEqual(compact["bytes"], 2048)
+        self.assertEqual(len(compact["sections"]["history"]["items"]) + compact["sections"]["history"]["omitted"], 5)
+
     def test_lists_sessions_open_handoffs_and_pending_candidates_newest_first(self) -> None:
         for i in range(3):
             self.session(i)

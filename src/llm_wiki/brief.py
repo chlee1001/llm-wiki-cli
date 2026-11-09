@@ -1,4 +1,4 @@
-"""A size-bounded start-of-session brief: open handoffs, candidates awaiting review, recent sessions.
+"""A size-bounded brief: handoffs, in-progress work, candidates, and recent sessions.
 
 The brief is read-only. Its text never exceeds the byte limit: whole items are dropped oldest first and
 each section reports how many it left out, so nothing is cut in the middle of an item or a character.
@@ -14,6 +14,7 @@ from typing import Any
 from .config import Wiki, WikiError
 from .curate import PENDING, candidate_scopes
 from .handoff import scan_handoffs
+from .history import state as history_state
 from .search import record_metadata
 from .sync import SyncError, owns_repository, repository_git_dir
 
@@ -23,9 +24,9 @@ EXCERPT_CHARS = 600
 STALE_FETCH_HOURS = 24
 WARNINGS_SHOWN = 5
 # Section order is also the priority for leftover budget. First-pass shares are fractions of the limit:
-# handoffs 8/16, candidates 3/16, sessions 3/16; whatever is left goes to sections that still omit items.
-SECTIONS = (("handoffs", "Open handoffs", 8), ("candidates", "Candidates awaiting review", 3), ("sessions", "Recent sessions", 3))
-EMPTY = {"handoffs": "_No open handoffs._", "candidates": "_No candidates awaiting review._", "sessions": "_No sessions._"}
+# handoffs 8/16, history 2/16, candidates 3/16, sessions 3/16; whatever is left goes to sections that still omit items.
+SECTIONS = (("handoffs", "Open handoffs", 8), ("history", "In-progress work", 2), ("candidates", "Candidates awaiting review", 3), ("sessions", "Recent sessions", 3))
+EMPTY = {"handoffs": "_No open handoffs._", "history": "_No in-progress work._", "candidates": "_No candidates awaiting review._", "sessions": "_No sessions._"}
 
 
 def _read(path: Path) -> str | None:
@@ -97,7 +98,7 @@ def _handoff_excerpt(body: str) -> str:
 
 def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[str]]:
     """Gather the brief's items; files that cannot be read as UTF-8 are listed, never silently dropped."""
-    found: dict[str, list[dict[str, Any]]] = {"handoffs": [], "candidates": [], "sessions": []}
+    found: dict[str, list[dict[str, Any]]] = {"handoffs": [], "history": [], "candidates": [], "sessions": []}
     duplicates: list[dict[str, Any]] = []
     unreadable: list[str] = []
 
@@ -107,6 +108,10 @@ def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, 
             return
         found[kind].append(_item(kind, path, wiki, text, excerpt(_body(text)), item_id))
 
+    for item in history_state(wiki, project=project)["open_work"]:
+        title = " ".join(item["title"].split())
+        link = f'{item["path"]}#{item["record_id"]}'
+        found["history"].append({**item, "text": f'- {title} · {item["since"]}→{item["last_week"]} · {item["work_status"]} · {item["evidence"]} · {link}\n\n', "_key": (item["last_week"], item["record_id"])})
     for scope in candidate_scopes(wiki, project):
         state = scan_handoffs(scope / "handoffs", wiki.directory)
         for entry in state["open"]:

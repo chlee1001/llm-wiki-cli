@@ -15,8 +15,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm_wiki import cli
-from llm_wiki.config import WikiError, add_project, current_project, discover, is_legacy_dir
+from llm_wiki.config import WikiError, add_project, current_project, discover, is_legacy_dir, set_category
 from llm_wiki.init import init_wiki, register_project
+from llm_wiki.history import ingest
 from llm_wiki.qmd import collection_name, qmd_search, qmd_sync, run_command
 from llm_wiki.records import _clean_single, promote, wrap
 from llm_wiki.redact import redact
@@ -143,6 +144,41 @@ class LlmWikiTests(unittest.TestCase):
         self.assertNotIn("llm-wiki/projects/b/knowledge/b.md", paths)
         all_results, _, _ = search(wiki, "needle", cwd, all_projects=True, engine="text")
         self.assertIn("llm-wiki/projects/b/knowledge/b.md", {entry["path"] for entry in all_results})
+
+    def test_history_search_uses_existing_scopes_and_qmd(self) -> None:
+        from tests.test_history import payload
+        for name in ("a", "b"):
+            (self.root / name / ".git").mkdir(parents=True)
+        init_wiki(self.root, "umbrella", "top", False, False)
+        wiki = discover(self.root)
+        data = payload()
+        data["records"][0].update(project="a", title="needle history", refs=[{"kind": "jira", "key": "IHWP-1774", "state": "unchecked"}])
+        second = dict(data["records"][0], project="b", id="second", carry_key="second")
+        data["records"].append(second)
+        ingest(wiki, data)
+        results, _, _ = search(wiki, "needle", self.root / "a", engine="text")
+        paths = {item["path"]: item for item in results}
+        page = "llm-wiki/projects/a/history/2026/2026-W45.md"
+        self.assertIn(page, paths)
+        self.assertEqual(paths[page]["type"], "history")
+        self.assertEqual(paths[page]["status"], "inferred")
+        self.assertNotIn("llm-wiki/projects/b/history/2026/2026-W45.md", paths)
+        tickets, _, _ = search(wiki, "IHWP-1774", self.root / "a", engine="text")
+        self.assertIn("llm-wiki/shared/history/tickets.md", {x["path"] for x in tickets})
+        wiki = set_category(wiki, "a", "company")
+        category, _, _ = search(wiki, "needle", self.root, category="company", engine="text")
+        self.assertIn(page, {x["path"] for x in category})
+        names = {collection_name(wiki, "shared"), collection_name(wiki, "a")}
+
+        def runner(command: list[str], timeout: int):
+            if command[1:3] == ["collection", "list"]:
+                return subprocess.CompletedProcess(command, 0, self.collection_list(names), "")
+            collection = command[command.index("-c") + 1]
+            entries = [{"file": f"qmd://{collection}/history/2026/2026-W45.md", "score": 1, "snippet": "needle"}] if collection == collection_name(wiki, "a") else []
+            return subprocess.CompletedProcess(command, 0, json.dumps(entries), "")
+
+        qmd, _, _ = search(wiki, "needle", self.root / "a", engine="qmd", runner=runner, qmd_available=True)
+        self.assertIn(page, {x["path"] for x in qmd})
 
     def test_qmd_sync_and_search_fake_runner(self) -> None:
         init_wiki(self.root, "single", "demo", False, False)

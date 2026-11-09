@@ -69,12 +69,14 @@ llm-wiki promote --title "확인 필요" --body "근거를 더 확인한다"
 | `add-project NAME` | 프로젝트와 프로젝트 전용 디렉터리를 등록한다. `--path PATH`로 프로젝트 경로를, `--category TEXT`로 분류를 정한다. |
 | `category PROJECT [VALUE]` | 프로젝트 분류를 보여 주거나 `VALUE`로 바꾼다. 빈 문자열이면 분류가 없다. |
 | `status` | 현재 위키, 프로젝트별 Markdown 수와 분류(`category`), QMD 설치 여부와 관리 파일 상태(`managed`), 갱신 명령(`refresh`)을 보여 준다. |
-| `brief` | 작업 시작용 요약을 출력한다. 열린 인수인계, 검토 대기 후보, 최근 세션을 기본 16384바이트 안에 담는다. `--project`, `--max-bytes N`, `--json`을 쓸 수 있다. 한도는 출력 본문(`text`)에 적용되고, `--json` 결과는 같은 내용을 항목별로도 담아 더 길다. 읽지 못한 기록과 중복 take 경고는 종류마다 5개까지만 본문에 싣고, 전체 목록은 `--json`의 `unreadable`과 `duplicate_takes`에 있다. |
+| `brief` | 작업 시작용 요약을 출력한다. 열린 인수인계, 진행 중인 작업, 검토 대기 후보, 최근 세션을 기본 16384바이트 안에 담는다. `--project`, `--max-bytes N`, `--json`을 쓸 수 있다. 한도는 출력 본문(`text`)에 적용되고, `--json` 결과는 같은 내용을 항목별로도 담아 더 길다. 읽지 못한 기록과 중복 take 경고는 종류마다 5개까지만 본문에 싣고, 전체 목록은 `--json`의 `unreadable`과 `duplicate_takes`에 있다. |
 | `search QUERY` | 현재 프로젝트와 공유 문서를 검색한다. `--project NAME` 또는 `-n N`으로 범위와 개수를 정하고, `--all-projects`는 전체를, `--category TEXT`는 그 분류의 프로젝트만 검색한다(공유 문서 제외). `--engine auto\|qmd\|text`로 검색 엔진을 고른다. 결과마다 문서 머리말의 `type`, `status`, `created`를 함께 보여 주고, 값이 없으면 `null`이다. |
 | `qmd-sync` | QMD collection과 context를 만들고 갱신한다. `--embed`를 붙이면 임베딩까지 만든다. |
 | `wrap` | 작업 종료 기록을 세션 문서와 로그에 남긴다. `--handoff`가 있으면 같은 이름의 인수인계 파일을 `handoffs/`에 따로 만들고 세션 문서와 서로 링크한다. 토큰, 비밀번호, 쿠키 값은 `[REDACTED_...]`로 가린다. `--topic`, `--task`, `--completed`는 필수이고 `--verification`, `--handoff`, `--not-tested`, `--agent`, `--project`, `--candidate`를 쓸 수 있다. |
 | `promote` | 검토 전 후보를 `inbox/candidates/`에 남긴다. `wrap`과 같은 규칙으로 비밀값을 가린다. `--title`, `--body`는 필수이고 `--source`, `--project`, `--shared`를 쓸 수 있다. `--source`가 있으면 상태가 `candidate-with-evidence`, 없으면 `needs-review`이고 출처 칸에 `None recorded.`를 쓴다. |
 | `take HANDOFF_ID` | 인수인계를 가져갔다고 표시한다. `--agent NAME`(기본 `gjc`), `--project`를 쓸 수 있다. 프로젝트를 정하지 못하면 `wrap`과 같이 공유 영역의 인수인계를 찾는다. |
+| `history ingest --input-json PATH` | 한 주의 `work-history/v2`를 프로젝트별 이력 페이지와 색인에 쓴다. `--check`는 쓰지 않고 검증한다. |
+| `history state` | 열린 작업과 결정 원장을 읽는다. `--project`, `--before`로 범위를 정한다. |
 | `review [PATH]` | 경로를 주면 후보 하나의 검토 재료(머리말, 본문, 출처, 세션 링크)를, 없으면 검토 대기 후보 목록을 출력한다. 파일은 바꾸지 않는다. |
 | `accept PATH` | 후보를 `accepted`로 결정한다. `--decided-by owner`와 `--reason`이 필요하다. |
 | `reject PATH` | 후보를 지우지 않고 `rejected`로 결정한다. `--decided-by NAME`과 `--reason`이 필요하다. |
@@ -179,7 +181,34 @@ llm-wiki init --path ~/work/api
 
 이 보장은 약하다. 두 머신이 서로 `sync`하기 전에 같은 인수인계를 가져가면 git으로는 막을 수 없다. 표시 파일이 둘 생기고 `brief`가 `duplicate take`로 경고한다.
 
-`brief`는 먼저 한도의 절반을 열린 인수인계에, 3/16씩을 후보와 최근 세션에 나눠 최신순으로 채운다. 남은 자리는 아직 생략이 있는 섹션에 인수인계, 후보, 세션 순으로 준다. 항목은 통째로만 빼고 섹션마다 생략 개수를 적는다. 위키가 git clone이면 `.git/FETCH_HEAD` 시각을 보고 한 번도 받아오지 않았거나 24시간이 지났을 때 경고한다.
+`brief`는 한도를 인수인계 8/16, 진행 중 작업 2/16, 후보 3/16, 세션 3/16으로 나눈다. 남은 자리는 같은 순서로 채운다. 항목은 통째로만 빼고 섹션마다 생략 개수를 적는다. 위키가 git clone이면 `.git/FETCH_HEAD` 시각을 보고 한 번도 받아오지 않았거나 24시간이 지났을 때 경고한다.
+
+## 작업 이력
+
+개발 노트와 별개로, 내가 해 온 작업을 이유와 의사결정까지 찾아볼 수 있게 남기는 영역이다. 후보 검토를 거치지 않고 바로 쓰며 페이지 머리말에 `origin: history-ingest`를 붙인다.
+
+```sh
+llm-wiki history ingest --input-json week.json --check --json
+llm-wiki history state --before 2026-W46 --json
+```
+
+입력은 `work-history/v2`만 받으며 `report`와 미등록 프로젝트를 거부한다.
+
+| 필드 | 내용 |
+| --- | --- |
+| `schema`, `week`, `period` | 스키마, ISO 주차, 해당 주 안의 시작일과 종료일 |
+| `extraction` | `bundle_sha256`, `skill`, `model` |
+| `records[]` | `id`, `project`, `date`, `title`, `summary`, `work_status`, `evidence`, `sources` 필수 |
+| 선택 필드 | `why`와 `why_quote`, `outcome`, `decisions`, `refs`, `tags`; 열린 작업은 `carry_key` 필수 |
+| `sources[]` | 세션 `agent`, `session`, `date` 또는 wrap 경로 `wrap`, `agent`, `date` |
+| `decisions[]` | `id`, `decision`, `options`, `supersedes`, `source`, `quote`; 이유가 있으면 `reason`과 `reason_quote` |
+| `refs[]` | PR의 host, repo, number, 상태와 조회 시각 또는 미조회 이유; JIRA의 key와 `unchecked` 상태 |
+
+레코드 날짜는 출처 날짜의 최댓값이며 출처 날짜는 해당 주 안이어야 한다. `carry_key`는 프로젝트별로 이월 작업을 식별한다. 완료 뒤 다시 열면 시작 주가 새로 정해진다. 결정은 같은 프로젝트의 이전 결정을 `supersedes`로 대체할 수 있다. `state --before`는 지정 주보다 앞선 이력만, ingest의 `state`는 입력 주까지의 이력만 반영한다.
+
+`evidence`는 `inferred` 또는 `verified`다. 인용은 원문에 그 문장이 있다는 것만 보장한다. 확인한 내용은 `verified_hash`로 묶는다. 해시는 `project`, `title`, `summary`, `why`, `why_quote`, `work_status`, `outcome`, `decisions`, `sources`, `refs`를 포함한 JSON을 키 정렬하고 공백 없이 UTF-8로 직렬화한 SHA-256이다. 없는 필드는 null이며 refs에는 `kind`, `host`, `repo`, `number`, `key`만 넣는다. 공유 벡터는 `tests/fixtures/content_hash_vector.json`에 있다.
+
+페이지는 `projects/<프로젝트>/history/<ISO 연도>/<주차>.md`, 색인은 프로젝트별 `history/index.md`와 `shared/history/tickets.md`다. ingest 뒤 검색 색인을 갱신하려면 `llm-wiki qmd-sync`를 실행한다. 파생 색인 충돌을 막기 위해 ingest와 sync는 한 머신에서만 실행한다.
 
 ## 후보 상태
 

@@ -12,6 +12,7 @@ from .brief import DEFAULT_LIMIT, brief
 from .config import WikiError, current_project, discover_for, has_config, mapped_workspace, require_writable, set_category, sync_directory
 from .curate import decide, pending, review
 from .handoff import take
+from .history import ingest, state as history_state
 from .init import init_central, init_wiki, init_workspace, link_workspace, managed_status, refresh_command, register_project
 from .qmd import qmd_sync
 from .records import promote, wrap
@@ -132,6 +133,17 @@ def parser() -> ArgumentParser:
     taking.add_argument("handoff_id")
     taking.add_argument("--agent", default="gjc")
     taking.add_argument("--project")
+
+    history = subcommands.add_parser("history", help="Record the owner's work history")
+    history_actions = history.add_subparsers(dest="history_command", required=True)
+    ingesting = history_actions.add_parser("ingest", help="Write one week of work-history/v2 records as wiki pages")
+    _common(ingesting)
+    ingesting.add_argument("--input-json", metavar="PATH", required=True, help="Read work-history/v2 JSON from stdin (-) or a file.")
+    ingesting.add_argument("--check", action="store_true", help="Validate without writing.")
+    history_status = history_actions.add_parser("state", help="Show open work and decisions")
+    _common(history_status)
+    history_status.add_argument("--project")
+    history_status.add_argument("--before", help="Only include weeks before this ISO week.")
     return command
 
 
@@ -236,6 +248,8 @@ def _normalize_input(args: argparse.Namespace) -> None:
             raise InputError("--category needs --wiki and --project")
         if args.wiki is not None and (args.central or args.mode is not None or args.name is not None):
             raise InputError("--wiki cannot be combined with --central, --mode, or --name")
+    elif args.command == "history" and args.history_command == "ingest":
+        args.history_data = _read_json_input(args.input_json)
     elif args.command == "promote":
         fields = ("title", "body", "source", "project", "shared")
         if args.input_json is not None:
@@ -354,6 +368,17 @@ def execute(args: argparse.Namespace) -> tuple[int, Any]:
         if handoff_path.is_file():
             result["handoff"] = str(handoff_path)
         return 0, result
+    if args.command == "history":
+        if args.history_command == "ingest":
+            return 0, ingest(wiki, args.history_data, check=args.check)
+        result = history_state(wiki, project=args.project, before=args.before)
+        if args.json:
+            return 0, result
+        lines = ["열린 작업", "프로젝트 | 작업 | 시작 주 | 마지막 주 | 상태"]
+        lines.extend(f'{x["project"]} | {x["title"]} | {x["since"]} | {x["last_week"]} | {x["work_status"]}' for x in result["open_work"])
+        lines += ["", "결정 원장", "프로젝트 | 결정 | 주 | 상태"]
+        lines.extend(f'{x["project"]} | {x["decision"]} | {x["week"]} | {x["status"]}' for x in result["decisions"])
+        return 0, "\n".join(lines)
     if args.command == "promote":
         require_writable(wiki)
         selected = None if args.shared else current_project(wiki, cwd, args.project if args.project is not None else mapped_project)

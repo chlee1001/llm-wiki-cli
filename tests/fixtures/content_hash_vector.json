@@ -1,0 +1,11 @@
+{
+  "record": {
+    "project": "sample",
+    "title": "검토",
+    "summary": "결과",
+    "work_status": "done",
+    "sources": [{"agent": "gjc", "session": "abc", "date": "2026-11-02"}],
+    "refs": [{"kind": "jira", "key": "ABC-123", "state": "unchecked"}]
+  },
+  "sha256": "3e2fac39c4d5808dc164d89c83b7eabe0a2f53ff84cdea7bc9ef5780188ff6a7"
+}
