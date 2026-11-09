@@ -20,6 +20,7 @@ from llm_wiki.init import init_central, register_project
 from llm_wiki.records import promote
 
 from gitwiki import GitWikiCase
+from test_history import payload
 
 BASE = datetime(2026, 1, 1, 9, 0, 0).astimezone()
 
@@ -110,6 +111,29 @@ body {index}
 
 
 class BriefContentTests(BriefCase):
+    def test_superseded_counts_and_done_thread_label(self) -> None:
+        handoffs = [self.handoff(i) for i in range(3)]
+        wraps = []
+        for handoff in handoffs:
+            path = self.project_dir / "sessions" / "2026" / "01" / handoff.name
+            put(path, "session")
+            wraps.append(path.relative_to(self.clone).as_posix())
+        data = payload()
+        record = data["records"][0]
+        record.update(project="api", work_status="done", sources=[{"agent": "gjc", "wrap": wrap, "date": "2026-11-02"} for wrap in wraps])
+        ingest(self.wiki, data)
+        result = brief(self.wiki, "api", 2048)
+        self.assertEqual(result["sections"]["handoffs"]["superseded"], 2)
+        self.assertIn("## Open handoffs (1 shown, 0 omitted, 2 superseded)", result["text"])
+        self.assertIn("history: improve-flow (done)", result["text"])
+        self.assertNotIn("handoff 0", result["text"])
+        self.assertNotIn("handoff 1", result["text"])
+        self.assertLessEqual(result["bytes"], 2048)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli.main(["brief", "--root", str(self.clone), "--project", "api", "--json"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["sections"]["handoffs"]["superseded"], 2)
+
     def test_in_progress_history_shows_open_only(self) -> None:
         records = []
         for i in range(6):

@@ -15,6 +15,7 @@ from .config import Wiki, WikiError
 from .curate import PENDING, candidate_scopes
 from .handoff import scan_handoffs
 from .history import state as history_state
+from .history import handoff_threads
 from .search import record_metadata
 from .sync import SyncError, owns_repository, repository_git_dir
 
@@ -96,11 +97,13 @@ def _handoff_excerpt(body: str) -> str:
     return "\n".join(line for line in body.splitlines() if not line.startswith(("# ", "Session: ")))
 
 
-def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[str]]:
+def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[str], int]:
     """Gather the brief's items; files that cannot be read as UTF-8 are listed, never silently dropped."""
     found: dict[str, list[dict[str, Any]]] = {"handoffs": [], "history": [], "candidates": [], "sessions": []}
     duplicates: list[dict[str, Any]] = []
     unreadable: list[str] = []
+    superseded = 0
+    threads = handoff_threads(wiki, project)
 
     def add(kind: str, path: Path, text: str | None, excerpt: Callable[[str], str], item_id: str | None = None) -> None:
         if text is None:
@@ -113,10 +116,15 @@ def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, 
         link = f'{item["path"]}#{item["record_id"]}'
         found["history"].append({**item, "text": f'- {title} · {item["since"]}→{item["last_week"]} · {item["work_status"]} · {item["evidence"]} · {link}\n\n', "_key": (item["last_week"], item["record_id"])})
     for scope in candidate_scopes(wiki, project):
-        state = scan_handoffs(scope / "handoffs", wiki.directory)
+        state = scan_handoffs(scope / "handoffs", wiki.directory, threads)
+        superseded += len(state["superseded"])
         for entry in state["open"]:
             path = wiki.directory / entry["path"]
+            count = len(found["handoffs"])
             add("handoffs", path, _read(path), _handoff_excerpt, entry["id"])
+            if len(found["handoffs"]) > count and "history" in entry:
+                history = entry["history"]
+                found["handoffs"][-1]["text"] += f'history: {history["record_id"]} ({history["work_status"]})\n\n'
         duplicates += [{"id": entry["id"], "agents": entry["agents"]} for entry in state["taken"] if entry["duplicate_take"]]
         candidates = scope / "inbox" / "candidates"
         if candidates.is_dir():
@@ -130,7 +138,7 @@ def _collect(wiki: Wiki, project: str | None) -> tuple[dict[str, list[dict[str, 
                 add("sessions", path, _read(path), lambda body: _section_text(body, "Completed"))
     for kind in found:
         found[kind].sort(key=lambda item: item["_key"], reverse=True)
-    return found, duplicates, sorted(unreadable)
+    return found, duplicates, sorted(unreadable), superseded
 
 
 def _freshness(wiki: Wiki) -> tuple[str | None, list[str]]:
@@ -160,13 +168,14 @@ def _folded(lines: list[str], what: str) -> list[str]:
     return lines[:WARNINGS_SHOWN] + [f"{len(lines) - WARNINGS_SHOWN} more {what}; see --json"]
 
 
-def _render(wiki: Wiki, project: str | None, warnings: list[str], shown: dict[str, list[dict[str, Any]]], omitted: dict[str, int]) -> str:
+def _render(wiki: Wiki, project: str | None, warnings: list[str], shown: dict[str, list[dict[str, Any]]], omitted: dict[str, int], superseded: int) -> str:
     parts = [f"# LLM Wiki brief: {wiki.name} / {project or 'all projects'}\n\n"]
     parts += [f"> warning: {warning}\n" for warning in warnings]
     if warnings:
         parts.append("\n")
     for kind, heading, _ in SECTIONS:
-        parts.append(f"## {heading} ({len(shown[kind])} shown, {omitted[kind]} omitted)\n\n")
+        extra = f", {superseded} superseded" if kind == "handoffs" else ""
+        parts.append(f"## {heading} ({len(shown[kind])} shown, {omitted[kind]} omitted{extra})\n\n")
         parts += [item["text"] for item in shown[kind]] or [EMPTY[kind] + "\n\n"]
     return "".join(parts).rstrip("\n") + "\n"
 
@@ -174,12 +183,12 @@ def _render(wiki: Wiki, project: str | None, warnings: list[str], shown: dict[st
 def brief(wiki: Wiki, project: str | None, limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
     if limit < MIN_LIMIT:
         raise WikiError(f"--max-bytes must be at least {MIN_LIMIT}.")
-    found, duplicates, unreadable = _collect(wiki, project)
+    found, duplicates, unreadable, superseded = _collect(wiki, project)
     last_fetch, warnings = _freshness(wiki)
     warnings += _folded([f"unreadable record skipped (not valid UTF-8 or not readable): {path}" for path in unreadable], "unreadable records")
     warnings += _folded([f"duplicate take: {item['id']} by {', '.join(item['agents'])}" for item in duplicates], "duplicate takes")
     # Upper bound of everything except the items: counts at their widest and every empty-section line.
-    fixed = len(_render(wiki, project, warnings, {k: [] for k in found}, {k: len(v) * 10 + 9 for k, v in found.items()}).encode("utf-8"))
+    fixed = len(_render(wiki, project, warnings, {k: [] for k in found}, {k: len(v) * 10 + 9 for k, v in found.items()}, superseded).encode("utf-8"))
     available = limit - fixed
     if available <= 0:
         raise WikiError("--max-bytes is too small for the brief headings.")
@@ -202,6 +211,7 @@ def brief(wiki: Wiki, project: str | None, limit: int = DEFAULT_LIMIT) -> dict[s
     for kind, _, _ in SECTIONS:
         used += fill(kind, available - used)
     omitted = {kind: len(found[kind]) - len(shown[kind]) for kind in found}
-    text = _render(wiki, project, warnings, shown, omitted)
+    text = _render(wiki, project, warnings, shown, omitted, superseded)
     sections = {kind: {"items": [{k: v for k, v in item.items() if k != "_key"} for item in shown[kind]], "omitted": omitted[kind]} for kind in found}
+    sections["handoffs"]["superseded"] = superseded
     return {"text": text, "bytes": len(text.encode("utf-8")), "limit": limit, "sections": sections, "duplicate_takes": duplicates, "last_fetch": last_fetch, "warnings": warnings, "unreadable": unreadable}

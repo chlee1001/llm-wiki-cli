@@ -13,11 +13,13 @@ from unittest.mock import patch
 from llm_wiki import cli
 from llm_wiki.config import WikiError, discover_for, load_wiki_at, read_roots
 from llm_wiki.handoff import handoff_state, scan_handoffs, take
+from llm_wiki.history import ingest
 from llm_wiki.init import init_central, register_project
 from llm_wiki.records import wrap
 from llm_wiki.search import search
 
 from gitwiki import read_all, snapshot
+from test_history import payload
 
 
 @contextmanager
@@ -405,6 +407,31 @@ class RootsTests(Base):
 
 
 class HandoffTests(Base):
+    def test_history_threads_and_taken_precedence(self) -> None:
+        sessions = [self.make_session(f"thread-{i}") for i in range(3)]
+        sessions.sort(key=lambda path: path.name)
+        data = payload()
+        record = data["records"][0]
+        record["project"] = "api"
+        record["sources"] = [{"agent": "gjc", "wrap": p.relative_to(self.clone).as_posix(), "date": "2026-11-02"} for p in sessions]
+        self.assertEqual(len(handoff_state(self.wiki, "api")["open"]), 3)
+        ingest(self.wiki, data)
+        before = read_all(self.clone)
+        result = handoff_state(self.wiki, "api")
+        self.assertEqual({item["id"] for item in result["superseded"]}, {p.stem for p in sessions[:2]})
+        self.assertEqual(result["superseded"][1]["by"], sessions[1].relative_to(self.clone).as_posix())
+        self.assertEqual(before, read_all(self.clone))
+        other = dict(record, id="other-thread", carry_key="other", sources=record["sources"][:1])
+        data["records"].append(other)
+        ingest(self.wiki, data)
+        result = handoff_state(self.wiki, "api")
+        self.assertEqual({item["id"] for item in result["open"]}, {sessions[0].stem, sessions[2].stem})
+        self.assertEqual([item["id"] for item in result["superseded"]], [sessions[1].stem])
+        take(self.wiki, "api", sessions[1].stem, "claude")
+        result = handoff_state(self.wiki, "api")
+        self.assertEqual(result["superseded"], [])
+        self.assertEqual([item["id"] for item in result["taken"]], [sessions[1].stem])
+
     def make_session(self, topic: str = "topic", handoff: str | None = "do the next thing") -> Path:
         path, _ = wrap(self.wiki, topic, "t", "c", None, handoff, None, "gjc", "api", [], self.workspace, handoff_file=True)
         return path
